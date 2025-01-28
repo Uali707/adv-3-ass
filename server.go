@@ -11,6 +11,7 @@ import (
 	"gopkg.in/gomail.v2"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 	"html/template" // Добавьте этот импорт для шаблонов
 	"io"
 	"log"
@@ -63,13 +64,13 @@ type Role struct {
 // Обновляем структуру User, добавляя поле Roles
 type User struct {
 	gorm.Model
-	Email             string    `gorm:"unique"`
+	Email             string `gorm:"unique"`
 	PasswordHash      string
 	VerificationToken string // Добавляем поле для токена верификации
 	IsVerified        bool
 	OTP               string
 	OTPExpiresAt      time.Time
-	Roles             []Role    `gorm:"many2many:user_roles;"`
+	Roles             []Role `gorm:"many2many:user_roles;"`
 }
 
 var logFile = "activity_logs.json" // Путь к файлу логов
@@ -144,28 +145,84 @@ func init() {
 	logger.SetLevel(logrus.InfoLevel)
 }
 
-// Инициализация базы данных
-func initDB() {
-	var err error
-	dsn := "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+// Определяем структуры моделей
+type Product struct {
+	gorm.Model
+	Name    string  `json:"name" gorm:"column:name"`
+	Price   float64 `json:"price" gorm:"column:price"`
+	Catalog string  `json:"catalog" gorm:"column:catalog"`
+}
+
+func (Product) TableName() string {
+	return "products"
+}
+
+// Обновляем функцию подключения к базе данных
+func connectDB() (*gorm.DB, error) {
+	// Получаем параметры подключения из переменных окружения
+	dbHost := os.Getenv("DB_HOST")
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbName := os.Getenv("DB_NAME")
+	dbPort := os.Getenv("DB_PORT")
+	if dbPort == "" {
+		dbPort = "5432"
+	}
+	dbSSLMode := os.Getenv("DB_SSLMODE")
+	if dbSSLMode == "" {
+		dbSSLMode = "require"
+	}
+
+	// Формируем строку подключения
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		dbHost, dbUser, dbPassword, dbName, dbPort, dbSSLMode)
+
+	// Для локальной разработки
+	if dbHost == "" {
+		dsn = fmt.Sprintf("host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable")
+	}
+
+	// Настраиваем логгер GORM
+	newLogger := gormlogger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
+		gormlogger.Config{
+			SlowThreshold:             time.Second,     // Порог медленного SQL
+			LogLevel:                  gormlogger.Info, // Уровень логирования
+			IgnoreRecordNotFoundError: true,            // Игнорировать ошибки "запись не найдена"
+			Colorful:                  false,           // Отключаем цветной вывод
+		},
+	)
+
+	// Открываем соединение с базой данных
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: newLogger,
+	})
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"dsn": dsn,
-		}).Fatal("Failed to connect to database")
+		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
 
-	logger.Info("Database connected successfully")
-
-	// Добавляем миграцию User
-	if err := db.AutoMigrate(&User{}); err != nil {
-		logger.Fatal("User migration failed: ", err)
+	// Настраиваем пул соединений
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database instance: %v", err)
 	}
 
-	// Миграция модели Device
-	if err := db.AutoMigrate(&Device{}); err != nil {
-		logger.Fatal("Device migration failed: ", err)
+	// Устанавливаем максимальное количество открытых соединений
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+
+	// Проверяем соединение
+	if err := sqlDB.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %v", err)
 	}
+
+	// Выполняем миграции
+	if err := db.AutoMigrate(&Product{}, &User{}, &Role{}); err != nil {
+		return nil, fmt.Errorf("failed to run migrations: %v", err)
+	}
+
+	return db, nil
 }
 
 // Обработка ошибок
@@ -377,8 +434,8 @@ func supportHandler(w http.ResponseWriter, r *http.Request) {
 // Обновляем функцию отправки email для поддержки вложений
 func sendEmail(to, subject, body, attachmentPath string) error {
 	logger.WithFields(logrus.Fields{
-		"to":              to,
-		"subject":         subject,
+		"to":             to,
+		"subject":        subject,
 		"has_attachment": attachmentPath != "",
 	}).Info("Attempting to send email")
 
@@ -504,7 +561,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Генерируем уникальный токен для верификации
 		verificationToken := generateVerificationToken()
-		
+
 		// Хешируем пароль
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.PasswordHash), bcrypt.DefaultCost)
 		if err != nil {
@@ -530,7 +587,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Формируем ссылку для верификации
 		verificationLink := fmt.Sprintf("http://localhost:3000/verify-email?token=%s", verificationToken)
-		
+
 		// Отправляем email со ссылкой верификации
 		emailBody := fmt.Sprintf(`
 			<h1>Welcome to our service!</h1>
@@ -545,7 +602,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 				"error": err,
 				"email": user.Email,
 			}).Error("Failed to send verification email")
-			
+
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{
 				"message": "User created but verification email failed to send",
@@ -1279,8 +1336,22 @@ func updateRoleHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// Инициализация базы данных
-	initDB()
+	// Инициализируем логгер
+	logger = logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+
+	// Подключаемся к базе данных
+	var err error
+	db, err = connectDB()
+	if err != nil {
+		logger.WithError(err).WithFields(logrus.Fields{
+			"host":     os.Getenv("DB_HOST"),
+			"user":     os.Getenv("DB_USER"),
+			"database": os.Getenv("DB_NAME"),
+			"port":     os.Getenv("DB_PORT"),
+			"sslmode":  os.Getenv("DB_SSLMODE"),
+		}).Fatal("Failed to connect to database")
+	}
 
 	// Создание сервера
 	srv := &http.Server{
