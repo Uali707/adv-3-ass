@@ -141,7 +141,14 @@ func init() {
 // Инициализация базы данных
 func initDB() {
 	var err error
-	dsn := "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
+
+	// Получаем строку подключения из переменной окружения
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		// Значение по умолчанию для локальной разработки
+		dsn = "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
+	}
+
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		logger.WithFields(logrus.Fields{
