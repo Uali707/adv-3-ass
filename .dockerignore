@@ -1,4 +1,6 @@
 .git
 .gitignore
 .env
-*.md 
+*.md
+README.md
+*.log 

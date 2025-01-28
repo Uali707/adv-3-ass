@@ -141,13 +141,13 @@ func init() {
 // Инициализация базы данных
 func initDB() {
 	var err error
-	dbHost := os.Getenv("DB_HOST")
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
+	// Получаем строку подключения из переменной окружения
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		// Используем значение по умолчанию для локальной разработки
+		dsn = "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
+	}
 
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=require",
-		dbHost, dbUser, dbPassword, dbName)
 	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		logger.WithFields(logrus.Fields{
@@ -309,23 +309,6 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Создаем map с функциями для шаблона
-var funcMap = template.FuncMap{
-	"subtract": func(a, b int) int {
-		return a - b
-	},
-	"add": func(a, b int) int {
-		return a + b
-	},
-	"iterate": func(start, count int) []int {
-		var items []int
-		for i := start; i <= count; i++ {
-			items = append(items, i)
-		}
-		return items
-	},
-}
-
 // Обработчик для отображения товаров
 func productsHandler(w http.ResponseWriter, r *http.Request) {
 	userIP := r.RemoteAddr
@@ -391,8 +374,7 @@ func productsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Рендеринг HTML-шаблона
-	tmpl := template.New("products.html").Funcs(funcMap)
-	tmpl, err := tmpl.ParseFiles("./public/products.html")
+	tmpl, err := template.ParseFiles("./public/products.html")
 	if err != nil {
 		handleError(w, err, "Failed to load template", http.StatusInternalServerError)
 		return
@@ -1243,11 +1225,13 @@ func main() {
 	// Инициализация базы данных
 	initDB()
 
-	// Создание сервера
+	// Получаем порт из переменной окружения
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "3000"
 	}
+
+	// Обновляем адрес сервера
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: http.DefaultServeMux,
