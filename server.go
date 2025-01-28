@@ -16,9 +16,11 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -138,9 +140,22 @@ func init() {
 	logger.SetLevel(logrus.InfoLevel)
 }
 
-// Инициализация базы данных
-func initDB() {
+// Добавим новую функцию для ожидания подключения к БД
+func waitForDB(dsn string) error {
 	var err error
+	for i := 0; i < 30; i++ { // Пробуем 30 раз
+		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if err == nil {
+			return nil
+		}
+		logger.WithError(err).Info("Waiting for database connection...")
+		time.Sleep(2 * time.Second)
+	}
+	return err
+}
+
+// Обновим функцию initDB
+func initDB() {
 	// Получаем строку подключения из переменной окружения
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -148,24 +163,40 @@ func initDB() {
 		dsn = "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
 	}
 
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
+	// Если строка начинается с postgres://, преобразуем её в формат DSN
+	if strings.HasPrefix(dsn, "postgres://") {
+		// Парсим URL
+		pgURL, err := url.Parse(dsn)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to parse database URL")
+		}
+
+		password, _ := pgURL.User.Password()
+		dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
+			pgURL.Hostname(),
+			pgURL.Port(),
+			pgURL.User.Username(),
+			password,
+			strings.TrimPrefix(pgURL.Path, "/"),
+		)
+	}
+
+	// Ждем подключения к базе данных
+	if err := waitForDB(dsn); err != nil {
 		logger.WithFields(logrus.Fields{
 			"dsn": dsn,
-		}).Fatal("Failed to connect to database")
+		}).Fatal("Failed to connect to database after multiple retries")
 	}
 
 	logger.Info("Database connected successfully")
 
-	// Добавляем миграцию User
-	if err := db.AutoMigrate(&User{}); err != nil {
-		logger.Fatal("User migration failed: ", err)
+	// Выполняем миграции
+	if err := db.AutoMigrate(&User{}, &Device{}, &Role{}, &Permission{}, &SupportMessage{}); err != nil {
+		logger.Fatal("Database migration failed: ", err)
 	}
 
-	// Миграция модели Device
-	if err := db.AutoMigrate(&Device{}); err != nil {
-		logger.Fatal("Device migration failed: ", err)
-	}
+	// Создаем базовые роли и разрешения
+	createDefaultRolesAndPermissions()
 }
 
 // Обработка ошибок

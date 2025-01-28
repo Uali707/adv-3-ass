@@ -13,8 +13,19 @@ services:
         fromDatabase:
           name: postgres
           property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
 
 databases:
   - name: postgres
     databaseName: advprog
-    plan: free  # или другой тарифный план 
+    plan: free  # или другой тарифный план
+    ipAllowList: []  # Разрешаем доступ отовсюду 
