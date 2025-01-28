@@ -11,11 +11,9 @@ import (
 	"gopkg.in/gomail.v2"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 	"html/template" // Добавьте этот импорт для шаблонов
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -24,11 +22,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-)
-
-// Добавим константы для пагинации
-const (
-	itemsPerPage = 6 // Количество товаров на странице
 )
 
 // Структура для хранения данных о действиях пользователей
@@ -145,84 +138,34 @@ func init() {
 	logger.SetLevel(logrus.InfoLevel)
 }
 
-// Определяем структуры моделей
-type Product struct {
-	gorm.Model
-	Name    string  `json:"name" gorm:"column:name"`
-	Price   float64 `json:"price" gorm:"column:price"`
-	Catalog string  `json:"catalog" gorm:"column:catalog"`
-}
-
-func (Product) TableName() string {
-	return "products"
-}
-
-// Обновляем функцию подключения к базе данных
-func connectDB() (*gorm.DB, error) {
-	// Получаем параметры подключения из переменных окружения
+// Инициализация базы данных
+func initDB() {
+	var err error
 	dbHost := os.Getenv("DB_HOST")
 	dbUser := os.Getenv("DB_USER")
 	dbPassword := os.Getenv("DB_PASSWORD")
 	dbName := os.Getenv("DB_NAME")
-	dbPort := os.Getenv("DB_PORT")
-	if dbPort == "" {
-		dbPort = "5432"
-	}
-	dbSSLMode := os.Getenv("DB_SSLMODE")
-	if dbSSLMode == "" {
-		dbSSLMode = "require"
-	}
 
-	// Формируем строку подключения
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-		dbHost, dbUser, dbPassword, dbName, dbPort, dbSSLMode)
-
-	// Для локальной разработки
-	if dbHost == "" {
-		dsn = fmt.Sprintf("host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable")
-	}
-
-	// Настраиваем логгер GORM
-	newLogger := gormlogger.New(
-		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
-		gormlogger.Config{
-			SlowThreshold:             time.Second,     // Порог медленного SQL
-			LogLevel:                  gormlogger.Info, // Уровень логирования
-			IgnoreRecordNotFoundError: true,            // Игнорировать ошибки "запись не найдена"
-			Colorful:                  false,           // Отключаем цветной вывод
-		},
-	)
-
-	// Открываем соединение с базой данных
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: newLogger,
-	})
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=require",
+		dbHost, dbUser, dbPassword, dbName)
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %v", err)
+		logger.WithFields(logrus.Fields{
+			"dsn": dsn,
+		}).Fatal("Failed to connect to database")
 	}
 
-	// Настраиваем пул соединений
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database instance: %v", err)
+	logger.Info("Database connected successfully")
+
+	// Добавляем миграцию User
+	if err := db.AutoMigrate(&User{}); err != nil {
+		logger.Fatal("User migration failed: ", err)
 	}
 
-	// Устанавливаем максимальное количество открытых соединений
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetConnMaxLifetime(5 * time.Minute)
-
-	// Проверяем соединение
-	if err := sqlDB.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %v", err)
+	// Миграция модели Device
+	if err := db.AutoMigrate(&Device{}); err != nil {
+		logger.Fatal("Device migration failed: ", err)
 	}
-
-	// Выполняем миграции
-	if err := db.AutoMigrate(&Product{}, &User{}, &Role{}); err != nil {
-		return nil, fmt.Errorf("failed to run migrations: %v", err)
-	}
-
-	return db, nil
 }
 
 // Обработка ошибок
@@ -231,131 +174,6 @@ func handleError(w http.ResponseWriter, err error, message string, statusCode in
 		"error": err,
 	}).Error(message)
 	http.Error(w, message, statusCode)
-}
-
-// Создаем глобальные функции для шаблонов
-var templateFuncs = template.FuncMap{
-	"subtract": func(a, b int) int {
-		return a - b
-	},
-	"add": func(a, b int) int {
-		return a + b
-	},
-	"iterate": func(start, end int) []int {
-		var result []int
-		for i := start; i <= end; i++ {
-			result = append(result, i)
-		}
-		return result
-	},
-}
-
-// Обновляем обработчик продуктов
-func productsHandler(w http.ResponseWriter, r *http.Request) {
-	// Получаем параметры из запроса
-	pageStr := r.URL.Query().Get("page")
-	catalog := r.URL.Query().Get("catalog")
-	sortBy := r.URL.Query().Get("sort_by")
-	sortOrder := r.URL.Query().Get("sort_order")
-	minPrice := r.URL.Query().Get("min_price")
-	maxPrice := r.URL.Query().Get("max_price")
-
-	page := 1 // По умолчанию первая страница
-	if pageStr != "" {
-		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
-			page = p
-		}
-	}
-
-	// Создаем базовый запрос
-	query := db.Model(&Device{})
-
-	// Применяем фильтры
-	if catalog != "" && catalog != "all" {
-		query = query.Where("catalog = ?", catalog)
-	}
-
-	if minPrice != "" {
-		if price, err := strconv.ParseFloat(minPrice, 64); err == nil {
-			query = query.Where("price >= ?", price)
-		}
-	}
-
-	if maxPrice != "" {
-		if price, err := strconv.ParseFloat(maxPrice, 64); err == nil {
-			query = query.Where("price <= ?", price)
-		}
-	}
-
-	// Получаем общее количество продуктов с учетом фильтров
-	var totalCount int64
-	query.Count(&totalCount)
-
-	// Применяем сортировку
-	if sortBy != "" {
-		order := "asc"
-		if sortOrder == "desc" {
-			order = "desc"
-		}
-		query = query.Order(fmt.Sprintf("%s %s", sortBy, order))
-	}
-
-	// Применяем пагинацию
-	offset := (page - 1) * itemsPerPage
-	var products []Device
-	if err := query.Offset(offset).Limit(itemsPerPage).Find(&products).Error; err != nil {
-		handleError(w, err, "Failed to fetch products", http.StatusInternalServerError)
-		return
-	}
-
-	// Получаем уникальные категории для фильтра
-	var categories []string
-	if err := db.Model(&Device{}).Distinct().Pluck("catalog", &categories).Error; err != nil {
-		logger.WithError(err).Error("Failed to fetch categories")
-	}
-
-	// Вычисляем общее количество страниц
-	totalPages := int(math.Ceil(float64(totalCount) / float64(itemsPerPage)))
-
-	// Создаем структуру данных для шаблона
-	data := struct {
-		Products     []Device
-		Categories   []string
-		CurrentPage  int
-		TotalPages   int
-		HasPrev      bool
-		HasNext      bool
-		CurrentSort  string
-		CurrentOrder string
-		Catalog      string
-		MinPrice     string
-		MaxPrice     string
-	}{
-		Products:     products,
-		Categories:   categories,
-		CurrentPage:  page,
-		TotalPages:   totalPages,
-		HasPrev:      page > 1,
-		HasNext:      page < totalPages,
-		CurrentSort:  sortBy,
-		CurrentOrder: sortOrder,
-		Catalog:      catalog,
-		MinPrice:     minPrice,
-		MaxPrice:     maxPrice,
-	}
-
-	// Создаем шаблон с функциями
-	tmpl := template.New("products.html").Funcs(templateFuncs)
-	tmpl, err := tmpl.ParseFiles("public/products.html")
-	if err != nil {
-		handleError(w, err, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-
-	if err := tmpl.Execute(w, data); err != nil {
-		handleError(w, err, "Failed to execute template", http.StatusInternalServerError)
-		return
-	}
 }
 
 // Обработчик для отправки сообщений в поддержку
@@ -488,6 +306,102 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+// Создаем map с функциями для шаблона
+var funcMap = template.FuncMap{
+	"subtract": func(a, b int) int {
+		return a - b
+	},
+	"add": func(a, b int) int {
+		return a + b
+	},
+	"iterate": func(start, count int) []int {
+		var items []int
+		for i := start; i <= count; i++ {
+			items = append(items, i)
+		}
+		return items
+	},
+}
+
+// Обработчик для отображения товаров
+func productsHandler(w http.ResponseWriter, r *http.Request) {
+	userIP := r.RemoteAddr
+	userAgent := r.UserAgent()
+
+	// Логирование действия
+	logToFile(UserActionLog{
+		UserIP:    userIP,
+		UserAgent: userAgent,
+		Endpoint:  "/products",
+		Method:    r.Method,
+		Action:    "View or filter products",
+		Params:    r.URL.RawQuery, // Включает параметры фильтрации, если они есть
+		CreatedAt: time.Now(),
+	})
+
+	var devices []Device
+	query := db
+
+	// Фильтрация по каталогу
+	catalog := r.URL.Query().Get("catalog")
+	if catalog != "" {
+		query = query.Where("catalog = ?", catalog)
+	}
+
+	// Фильтрация по цене
+	minPrice := r.URL.Query().Get("min_price")
+	if minPrice != "" {
+		if min, err := strconv.ParseFloat(minPrice, 64); err == nil {
+			query = query.Where("price >= ?", min)
+		}
+	}
+	maxPrice := r.URL.Query().Get("max_price")
+	if maxPrice != "" {
+		if max, err := strconv.ParseFloat(maxPrice, 64); err == nil {
+			query = query.Where("price <= ?", max)
+		}
+	}
+
+	// Сортировка
+	sortBy := r.URL.Query().Get("sort_by")
+	if sortBy != "" {
+		sortOrder := r.URL.Query().Get("sort_order")
+		if sortOrder != "desc" {
+			sortOrder = "asc"
+		}
+		query = query.Order(fmt.Sprintf("%s %s", sortBy, sortOrder))
+	}
+
+	// Пагинация
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize := 5
+	offset := (page - 1) * pageSize
+	query = query.Offset(offset).Limit(pageSize)
+
+	// Получение данных из базы
+	if err := query.Find(&devices).Error; err != nil {
+		handleError(w, err, "Failed to fetch devices", http.StatusInternalServerError)
+		return
+	}
+
+	// Рендеринг HTML-шаблона
+	tmpl := template.New("products.html").Funcs(funcMap)
+	tmpl, err := tmpl.ParseFiles("./public/products.html")
+	if err != nil {
+		handleError(w, err, "Failed to load template", http.StatusInternalServerError)
+		return
+	}
+
+	// Передача данных в шаблон
+	if err := tmpl.Execute(w, devices); err != nil {
+		handleError(w, err, "Failed to render template", http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -825,8 +739,7 @@ func otpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 	otp := r.FormValue("otp")
 
 	var user User
-	// Загружаем пользователя вместе с его ролями
-	if err := db.Preload("Roles").Where("email = ?", email).First(&user).Error; err != nil {
+	if err := db.Preload("Roles.Permissions").Where("email = ?", email).First(&user).Error; err != nil {
 		logger.WithError(err).Error("User not found")
 		http.Error(w, "Invalid email", http.StatusUnauthorized)
 		return
@@ -847,20 +760,11 @@ func otpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		logger.WithError(err).Error("Failed to clear OTP")
 	}
 
-	// Проверяем, является ли пользователь администратором
-	isAdmin := false
-	for _, role := range user.Roles {
-		if role.Name == "admin" {
-			isAdmin = true
-			break
-		}
-	}
-
-	// Создаем JWT токен с информацией о ролях
+	// Создаем JWT токен с информацией о ролях пользователя
 	claims := jwt.MapClaims{
-		"email":   user.Email,
-		"exp":     time.Now().Add(24 * time.Hour).Unix(),
-		"isAdmin": isAdmin, // Добавляем флаг админа в токен
+		"email": user.Email,
+		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+		"roles": getRoleNames(user.Roles), // Добавляем роли в токен
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -873,8 +777,8 @@ func otpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":   tokenString,
-		"isAdmin": isAdmin,
+		"token": tokenString,
+		"roles": getRoleNames(user.Roles),
 	})
 }
 
@@ -1336,34 +1240,25 @@ func updateRoleHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// Инициализируем логгер
-	logger = logrus.New()
-	logger.SetFormatter(&logrus.JSONFormatter{})
-
-	// Подключаемся к базе данных
-	var err error
-	db, err = connectDB()
-	if err != nil {
-		logger.WithError(err).WithFields(logrus.Fields{
-			"host":     os.Getenv("DB_HOST"),
-			"user":     os.Getenv("DB_USER"),
-			"database": os.Getenv("DB_NAME"),
-			"port":     os.Getenv("DB_PORT"),
-			"sslmode":  os.Getenv("DB_SSLMODE"),
-		}).Fatal("Failed to connect to database")
-	}
+	// Инициализация базы данных
+	initDB()
 
 	// Создание сервера
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000"
+	}
 	srv := &http.Server{
-		Addr:    ":3000",
+		Addr:    ":" + port,
 		Handler: http.DefaultServeMux,
 	}
 
 	// Обслуживание статических файлов
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./public"))))
 
-	// Маршруты
+	// Маршрут для отображения продуктов
 	http.HandleFunc("/products", rateLimitMiddleware(productsHandler))
+	http.HandleFunc("/support", supportHandler)
 	http.HandleFunc("/register", registerHandler)
 	http.HandleFunc("/verify", verifyHandler)
 	http.HandleFunc("/login", loginHandler)
@@ -1373,18 +1268,6 @@ func main() {
 	http.HandleFunc("/api/list-roles", listRolesHandler)
 	http.HandleFunc("/api/list-permissions", listPermissionsHandler)
 	http.HandleFunc("/api/add-role", addRoleHandler)
-
-	// Маршрут для страницы поддержки (оставляем только один)
-	http.HandleFunc("/support", supportHandler)
-
-	// Добавляем корневой маршрут, который будет перенаправлять на /products
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/products", http.StatusSeeOther)
-			return
-		}
-		http.NotFound(w, r)
-	})
 
 	// Пример защищенного маршрута
 	http.HandleFunc("/api/protected", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -1472,6 +1355,8 @@ func main() {
 	http.HandleFunc("/admin/roles/list", permissionMiddleware("manage_roles")(listRolesHandler))
 	http.HandleFunc("/admin/permissions/list", permissionMiddleware("manage_roles")(listPermissionsHandler))
 	http.HandleFunc("/admin/roles/add", permissionMiddleware("manage_roles")(addRoleHandler))
+
+	// Добавьте эти маршруты перед запуском сервера
 	http.HandleFunc("/admin/roles/delete", permissionMiddleware("manage_roles")(deleteRoleHandler))
 	http.HandleFunc("/admin/roles/get", permissionMiddleware("manage_roles")(getRoleHandler))
 	http.HandleFunc("/admin/roles/update", permissionMiddleware("manage_roles")(updateRoleHandler))
@@ -1481,7 +1366,7 @@ func main() {
 
 	// Запуск сервера в отдельной горутине
 	go func() {
-		logger.Info("Server is running on port 3000")
+		logger.Info("Server is running on port " + port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Fatal("Failed to start server")
 		}

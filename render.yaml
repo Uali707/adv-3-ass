@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: eshop
+    env: docker
+    buildCommand: docker build -t eshop .
+    startCommand: docker run -p 3000:3000 eshop
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false 
