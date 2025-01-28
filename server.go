@@ -154,18 +154,16 @@ func waitForDB(dsn string) error {
 	return err
 }
 
-// Обновим функцию initDB
+// Обновляем функцию initDB для работы с SSL
 func initDB() {
-	// Получаем строку подключения из переменной окружения
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// Используем значение по умолчанию для локальной разработки
-		dsn = "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
+		logger.Fatal("DATABASE_URL environment variable is not set")
+		return
 	}
 
 	// Если строка начинается с postgres://, преобразуем её в формат DSN
 	if strings.HasPrefix(dsn, "postgres://") {
-		// Парсим URL
 		pgURL, err := url.Parse(dsn)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to parse database URL")
@@ -1262,7 +1260,7 @@ func main() {
 		port = "3000"
 	}
 
-	// Обновляем адрес сервера
+	// Обновляем адрес сервера для работы с Render
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: http.DefaultServeMux,

@@ -1,8 +1,5 @@
-# Используем официальный образ Go
+# Используем официальный образ Golang
 FROM golang:1.21-alpine
-
-# Устанавливаем необходимые пакеты
-RUN apk add --no-cache gcc musl-dev
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
@@ -10,15 +7,11 @@ WORKDIR /app
 # Копируем файлы с зависимостями
 COPY go.mod go.sum ./
 
-# Устанавливаем зависимости
+# Скачиваем зависимости
 RUN go mod download
 
-# Копируем исходный код и статические файлы
+# Копируем исходный код
 COPY . .
-
-# Создаем необходимые директории
-RUN mkdir -p /app/public/admin
-RUN mkdir -p /app/uploads
 
 # Собираем приложение
 RUN go build -o main .
