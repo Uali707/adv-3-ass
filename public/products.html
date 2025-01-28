@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eShop - Products</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .card-img-top {
+            object-fit: cover;
+            height: 200px;
+        }
+        .pagination .page-item.active .page-link {
+            background-color: #007bff;
+            border-color: #007bff;
+        }
+        .pagination .page-link {
+            border-radius: 50%;
+            margin: 0 5px;
+        }
+        .pagination {
+            margin-top: 20px;
+        }
+        .filter-form select,
+        .filter-form input {
+            border-radius: 8px;
+        }
+        .navbar {
+            padding: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .nav-link {
+            color: #6c757d;
+            margin: 0 10px;
+            transition: color 0.3s ease;
+        }
+        .nav-link:hover {
+            color: #0d6efd;
+        }
+        .auth-buttons {
+            display: none;
+        }
+        .user-buttons {
+            display: none;
+        }
+        .pagination {
+            margin-top: 2rem;
+            margin-bottom: 2rem;
+        }
+        .pagination .page-item.active .page-link {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+            color: white;
+        }
+        .pagination .page-link {
+            color: #0d6efd;
+            padding: 0.5rem 1rem;
+            margin: 0 0.2rem;
+            border-radius: 0.25rem;
+        }
+        .pagination .page-link:hover {
+            background-color: #e9ecef;
+            border-color: #dee2e6;
+            color: #0a58ca;
+        }
+        .card {
+            transition: transform 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .card-img-top {
+            height: 200px;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body>
+<div class="container-fluid px-0">
+    <!-- Обновленная навигационная панель -->
+    <nav class="navbar navbar-expand-lg navbar-light bg-light mb-4">
+        <div class="container">
+            <a class="navbar-brand" href="/products">
+                <strong>eShop</strong>
+            </a>
+            
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/products">Products</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/support">Support</a>
+                    </li>
+                </ul>
+                
+                <!-- Кнопки для неавторизованных пользователей -->
+                <div class="auth-buttons">
+                    <a href="/login" class="btn btn-outline-primary me-2">Login</a>
+                    <a href="/register" class="btn btn-primary">Register</a>
+                </div>
+                
+                <!-- Кнопки для авторизованных пользователей -->
+                <div class="user-buttons">
+                    <div id="adminButton" style="display: none;" class="d-inline-block me-2">
+                        <a href="/admin/roles" class="btn btn-warning">Admin Panel</a>
+                    </div>
+                    <button onclick="logout()" class="btn btn-outline-danger">Logout</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <h1 class="text-center mb-4">Products</h1>
+
+    <!-- Добавляем форму фильтрации перед списком продуктов -->
+    <div class="container mb-4">
+        <form id="filterForm" class="bg-light p-4 rounded shadow-sm">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label for="catalog" class="form-label">Category</label>
+                    <select class="form-select" id="catalog" name="catalog">
+                        <option value="all" {{if eq .Catalog "all"}}selected{{end}}>All Categories</option>
+                        {{range .Categories}}
+                        <option value="{{.}}" {{if eq $.Catalog .}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label for="min_price" class="form-label">Min Price</label>
+                    <input type="number" class="form-control" id="min_price" name="min_price" value="{{.MinPrice}}">
+                </div>
+                <div class="col-md-2">
+                    <label for="max_price" class="form-label">Max Price</label>
+                    <input type="number" class="form-control" id="max_price" name="max_price" value="{{.MaxPrice}}">
+                </div>
+                <div class="col-md-2">
+                    <label for="sort_by" class="form-label">Sort By</label>
+                    <select class="form-select" id="sort_by" name="sort_by">
+                        <option value="" {{if eq .CurrentSort ""}}selected{{end}}>None</option>
+                        <option value="price" {{if eq .CurrentSort "price"}}selected{{end}}>Price</option>
+                        <option value="name" {{if eq .CurrentSort "name"}}selected{{end}}>Name</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label for="sort_order" class="form-label">Order</label>
+                    <select class="form-select" id="sort_order" name="sort_order">
+                        <option value="asc" {{if eq .CurrentOrder "asc"}}selected{{end}}>Ascending</option>
+                        <option value="desc" {{if eq .CurrentOrder "desc"}}selected{{end}}>Descending</option>
+                    </select>
+                </div>
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100">Filter</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- Обновляем секцию списка продуктов -->
+    <div class="container">
+        <!-- Список продуктов -->
+        <div class="row row-cols-1 row-cols-md-3 g-4 mb-4">
+            {{range .Products}}
+            <div class="col">
+                <div class="card h-100 shadow-sm">
+                    <img src="https://via.placeholder.com/300x200" class="card-img-top" alt="{{.Name}}">
+                    <div class="card-body">
+                        <h5 class="card-title">{{.Name}}</h5>
+                        <p class="text-primary fw-bold">${{printf "%.2f" .Price}}</p>
+                        <p class="text-muted">{{.Catalog}}</p>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Обновленная пагинация -->
+        <nav aria-label="Product pagination">
+            <ul class="pagination justify-content-center">
+                {{if .HasPrev}}
+                <li class="page-item">
+                    <a class="page-link" href="?page={{subtract .CurrentPage 1}}" aria-label="Previous">
+                        <span aria-hidden="true">&laquo;</span>
+                    </a>
+                </li>
+                {{end}}
+                
+                {{range $i := iterate 1 .TotalPages}}
+                <li class="page-item {{if eq $i $.CurrentPage}}active{{end}}">
+                    <a class="page-link" href="?page={{$i}}">{{$i}}</a>
+                </li>
+                {{end}}
+                
+                {{if .HasNext}}
+                <li class="page-item">
+                    <a class="page-link" href="?page={{add .CurrentPage 1}}" aria-label="Next">
+                        <span aria-hidden="true">&raquo;</span>
+                    </a>
+                </li>
+                {{end}}
+            </ul>
+        </nav>
+    </div>
+</div>
+
+<script>
+// Обновляем скрипт для управления отображением кнопок
+document.addEventListener('DOMContentLoaded', async () => {
+    const token = localStorage.getItem('authToken');
+    const authButtons = document.querySelector('.auth-buttons');
+    const userButtons = document.querySelector('.user-buttons');
+    const adminButton = document.getElementById('adminButton');
+    
+    if (token) {
+        try {
+            // Декодируем JWT токен
+            const payload = JSON.parse(atob(token.split('.')[1]));
+            
+            // Показываем кнопки для авторизованного пользователя
+            userButtons.style.display = 'block';
+            authButtons.style.display = 'none';
+            
+            // Показываем кнопку админ-панели только если пользователь админ
+            if (payload.isAdmin) {
+                adminButton.style.display = 'inline-block';
+            } else {
+                adminButton.style.display = 'none';
+            }
+            
+        } catch (error) {
+            console.error('Error parsing token:', error);
+            // В случае ошибки показываем кнопки для неавторизованного пользователя
+            authButtons.style.display = 'block';
+            userButtons.style.display = 'none';
+            adminButton.style.display = 'none';
+        }
+    } else {
+        // Если токена нет, показываем кнопки для неавторизованного пользователя
+        authButtons.style.display = 'block';
+        userButtons.style.display = 'none';
+        adminButton.style.display = 'none';
+    }
+});
+
+function logout() {
+    localStorage.removeItem('authToken');
+    window.location.reload();
+}
+
+// Добавляем функцию для сохранения параметров фильтрации при пагинации
+function updateQueryString(key, value) {
+    const urlParams = new URLSearchParams(window.location.search);
+    urlParams.set(key, value);
+    return '?' + urlParams.toString();
+}
+
+// Добавляем JavaScript для сохранения параметров фильтрации
+document.getElementById('filterForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const formData = new FormData(this);
+    const params = new URLSearchParams();
+    
+    for (let [key, value] of formData.entries()) {
+        if (value) { // Добавляем только непустые значения
+            params.append(key, value);
+        }
+    }
+    
+    // Добавляем текущую страницу
+    params.append('page', '1'); // При фильтрации всегда начинаем с первой страницы
+    
+    window.location.href = '?' + params.toString();
+});
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

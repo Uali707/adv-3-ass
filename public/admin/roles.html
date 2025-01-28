@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Role Management</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>Role Management</h1>
+        
+        <!-- Форма добавления роли -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4>Add New Role</h4>
+            </div>
+            <div class="card-body">
+                <form id="addRoleForm">
+                    <div class="mb-3">
+                        <label for="roleName" class="form-label">Role Name</label>
+                        <input type="text" class="form-control" id="roleName" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="roleDescription" class="form-label">Description</label>
+                        <textarea class="form-control" id="roleDescription" required></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Permissions</label>
+                        <div id="permissionsList">
+                            <!-- Permissions will be loaded here -->
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Add Role</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Список существующих ролей -->
+        <div class="card">
+            <div class="card-header">
+                <h4>Existing Roles</h4>
+            </div>
+            <div class="card-body">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Permissions</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rolesTable">
+                        <!-- Roles will be loaded here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Функция для получения заголовков с токеном
+        function getHeaders() {
+            const token = localStorage.getItem('authToken');
+            console.log('Current token:', token); // Для отладки
+            if (!token) {
+                console.error('No token found in localStorage');
+                window.location.href = '/login';
+                return {};
+            }
+            return {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        // Обновляем функцию загрузки ролей
+        async function loadRoles() {
+            try {
+                const headers = getHeaders();
+                console.log('Request headers:', headers); // Для отладки
+
+                const response = await fetch('/admin/roles/list', {
+                    method: 'GET',
+                    headers: headers
+                });
+
+                console.log('Response status:', response.status); // Для отладки
+
+                if (response.status === 401) {
+                    console.error('Unauthorized access');
+                    window.location.href = '/login';
+                    return;
+                }
+
+                const roles = await response.json();
+                console.log('Loaded roles:', roles); // Для отладки
+
+                const tbody = document.getElementById('rolesTable');
+                tbody.innerHTML = '';
+
+                roles.forEach(role => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${role.Name}</td>
+                        <td>${role.Description}</td>
+                        <td>${role.Permissions.map(p => p.Name).join(', ')}</td>
+                        <td>
+                            <button class="btn btn-sm btn-warning" onclick="editRole(${role.ID})">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteRole(${role.ID})">Delete</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (error) {
+                console.error('Error loading roles:', error);
+            }
+        }
+
+        // Обновляем функцию загрузки разрешений
+        async function loadPermissions() {
+            try {
+                const headers = getHeaders();
+                console.log('Request headers for permissions:', headers); // Для отладки
+
+                const response = await fetch('/admin/permissions/list', {
+                    method: 'GET',
+                    headers: headers
+                });
+
+                console.log('Permissions response status:', response.status); // Для отладки
+
+                if (response.status === 401) {
+                    console.error('Unauthorized access');
+                    window.location.href = '/login';
+                    return;
+                }
+
+                const permissions = await response.json();
+                console.log('Loaded permissions:', permissions); // Для отладки
+
+                const div = document.getElementById('permissionsList');
+                div.innerHTML = '';
+
+                permissions.forEach(permission => {
+                    div.innerHTML += `
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" value="${permission.ID}" id="perm${permission.ID}">
+                            <label class="form-check-label" for="perm${permission.ID}">
+                                ${permission.Name} - ${permission.Description}
+                            </label>
+                        </div>
+                    `;
+                });
+            } catch (error) {
+                console.error('Error loading permissions:', error);
+            }
+        }
+
+        // Обновляем обработчик формы
+        document.getElementById('addRoleForm').onsubmit = async function(e) {
+            e.preventDefault();
+            
+            const permissions = Array.from(document.querySelectorAll('#permissionsList input:checked'))
+                .map(input => parseInt(input.value));
+
+            const data = {
+                name: document.getElementById('roleName').value,
+                description: document.getElementById('roleDescription').value,
+                permissions: permissions
+            };
+
+            const isEditMode = this.dataset.editMode === 'true';
+            if (isEditMode) {
+                data.id = parseInt(this.dataset.roleId);
+            }
+
+            try {
+                const response = await fetch(isEditMode ? '/admin/roles/update' : '/admin/roles/add', {
+                    method: isEditMode ? 'PUT' : 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify(data)
+                });
+
+                if (response.ok) {
+                    alert(isEditMode ? 'Role updated successfully' : 'Role added successfully');
+                    loadRoles();
+                    this.reset();
+                    // Сбрасываем форму в режим добавления
+                    this.dataset.editMode = 'false';
+                    this.dataset.roleId = '';
+                    document.querySelector('button[type="submit"]').textContent = 'Add Role';
+                } else {
+                    const error = await response.text();
+                    alert(isEditMode ? 'Failed to update role: ' : 'Failed to add role: ' + error);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert(isEditMode ? 'Failed to update role' : 'Failed to add role');
+            }
+        };
+
+        // Обновляем функцию загрузки страницы
+        document.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('authToken');
+            console.log('Token on roles page:', token); // Для отладки
+            if (!token) {
+                console.error('No token found, redirecting to login');
+                window.location.href = '/login';
+                return;
+            }
+            loadRoles();
+            loadPermissions();
+        });
+
+        // Добавляем обработчик ошибок fetch
+        window.addEventListener('unhandledrejection', function(event) {
+            console.error('Unhandled promise rejection:', event.reason);
+        });
+
+        async function deleteRole(roleId) {
+            if (!confirm('Are you sure you want to delete this role?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/admin/roles/delete?id=${roleId}`, {
+                    method: 'DELETE',
+                    headers: getHeaders()
+                });
+
+                if (response.ok) {
+                    alert('Role deleted successfully');
+                    loadRoles();
+                } else {
+                    const error = await response.text();
+                    alert('Failed to delete role: ' + error);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to delete role');
+            }
+        }
+
+        async function editRole(roleId) {
+            try {
+                const response = await fetch(`/admin/roles/get?id=${roleId}`, {
+                    headers: getHeaders()
+                });
+
+                if (response.ok) {
+                    const role = await response.json();
+                    
+                    // Заполняем форму данными роли
+                    document.getElementById('roleName').value = role.Name;
+                    document.getElementById('roleDescription').value = role.Description;
+                    
+                    // Отмечаем текущие разрешения
+                    const checkboxes = document.querySelectorAll('#permissionsList input[type="checkbox"]');
+                    checkboxes.forEach(checkbox => {
+                        checkbox.checked = role.Permissions.some(p => p.ID === parseInt(checkbox.value));
+                    });
+
+                    // Изменяем форму для режима редактирования
+                    const form = document.getElementById('addRoleForm');
+                    form.dataset.editMode = 'true';
+                    form.dataset.roleId = roleId;
+                    document.querySelector('button[type="submit"]').textContent = 'Update Role';
+                } else {
+                    alert('Failed to fetch role details');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to fetch role details');
+            }
+        }
+
+        // Добавьте кнопку для отмены редактирования
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.className = 'btn btn-secondary ms-2';
+        cancelButton.textContent = 'Cancel';
+        cancelButton.onclick = function() {
+            const form = document.getElementById('addRoleForm');
+            form.reset();
+            form.dataset.editMode = 'false';
+            form.dataset.roleId = '';
+            document.querySelector('button[type="submit"]').textContent = 'Add Role';
+        };
+        document.querySelector('button[type="submit"]').after(cancelButton);
+    </script>
+</body>
+</html> 

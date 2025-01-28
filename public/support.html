@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Support</title>
+</head>
+<body>
+<h1>Связаться с поддержкой</h1>
+<form action="/support" method="post" enctype="multipart/form-data">
+  <label for="email">Ваш Email:</label><br>
+  <input type="email" id="email" name="email" required><br><br>
+
+  <label for="subject">Тема:</label><br>
+  <input type="text" id="subject" name="subject" required><br><br>
+
+  <label for="message">Сообщение:</label><br>
+  <textarea id="message" name="message" rows="5" required></textarea><br><br>
+
+  <label for="attachment">Прикрепить файл:</label><br>
+  <input type="file" id="attachment" name="attachment"><br><br>
+
+  <button type="submit">Отправить</button>
+</form>
+<script>
+  document.querySelector('form').addEventListener('submit', function(e) {
+    const email = document.getElementById('email').value;
+    const message = document.getElementById('message').value;
+    if (!email || !message) {
+      e.preventDefault();
+      alert('Пожалуйста, заполните все обязательные поля.');
+    }
+  });
+</script>
+
+</body>
+</html>
