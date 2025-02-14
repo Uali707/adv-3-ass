@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Админ панель чата</title>
+    <style>
+        .admin-container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+
+        .chat-list {
+            margin-bottom: 20px;
+        }
+
+        .chat-item {
+            padding: 10px;
+            border: 1px solid #ccc;
+            margin: 5px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .close-button {
+            background-color: #dc3545;
+        }
+
+        .close-button:hover {
+            background-color: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-container">
+        <h2>Активные чаты</h2>
+        <div id="chatList" class="chat-list"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        
+        const socket = io({ 
+            query: { isAdmin: true },
+            transports: ['websocket'],
+            upgrade: false
+        });
+
+        const adminId = 'admin-' + Math.random().toString(36).substring(7);
+
+        function closeChat(chatId) {
+            socket.emit('closeChat', chatId);
+            document.querySelector(`[data-chat-id="${chatId}"]`).remove();
+        }
+
+        socket.on('connect_error', (error) => {
+            console.error('Ошибка подключения:', error);
+        });
+
+        socket.on('connect', () => {
+            console.log('Админ подключен к серверу');
+        });
+
+        socket.on('chatCreated', (chatId) => {
+            console.log('Новый чат создан:', chatId);
+            addChatToList(chatId);
+        });
+
+        function addChatToList(chatId) {
+            const chatList = document.getElementById('chatList');
+            const chatElement = document.createElement('div');
+            chatElement.className = 'chat-item';
+            chatElement.setAttribute('data-chat-id', chatId);
+            chatElement.innerHTML = `
+                <span>Чат #${chatId}</span>
+                <button onclick="closeChat('${chatId}')" class="close-button">Закрыть чат</button>
+            `;
+            chatList.appendChild(chatElement);
+        }
+    </script>
+</body>
+</html> 

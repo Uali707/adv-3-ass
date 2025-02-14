@@ -1,6 +1,7 @@
 .git
 .gitignore
-.env
-*.md
 README.md
-*.log 
+docker-compose.yml
+Dockerfile
+*.md
+/vendor 

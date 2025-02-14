@@ -1,5 +1,43 @@
-.env
+# Бинарные файлы
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Временные файлы
+tmp/
+*.tmp
+
+# Логи
 *.log
+
+# Конфиденциальные данные
+.env
+
+# Зависимости
+vendor/
+
+# IDE
+.idea/
+.vscode/
+
 node_modules/
 /tmp
-.DS_Store 
+.DS_Store
+
+DB_USER=postgres
+DB_PASSWORD=aGXIoDobvPAUtWzhAveairYSaMPgwJRc
+DB_HOST=junction.proxy.rlwy.net
+DB_PORT=46528
+DB_NAME=railway
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# MongoDB data
+data/ 

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Чат поддержки</title>
+    <style>
+        .chat-container {
+            max-width: 600px;
+            margin: 20px auto;
+            border: 1px solid #ccc;
+            padding: 20px;
+        }
+
+        .messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .message.sent {
+            background-color: #e3f2fd;
+            margin-left: 20%;
+        }
+
+        .message.received {
+            background-color: #f5f5f5;
+            margin-right: 20%;
+        }
+
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+
+        input {
+            flex: 1;
+            padding: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="messages" id="messages"></div>
+        <div class="input-container">
+            <input type="text" id="messageInput" placeholder="Введите сообщение...">
+            <button onclick="sendMessage()">Отправить</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const userId = Math.random().toString(36).substring(7); // Имитация ID пользователя
+        let currentChatId = null;
+
+        // Создание чата при загрузке страницы
+        socket.emit('createChat', userId);
+
+        socket.on('chatCreated', (chatId) => {
+            currentChatId = chatId;
+            console.log('Чат создан:', chatId);
+        });
+
+        socket.on('newMessage', (message) => {
+            displayMessage(message);
+        });
+
+        socket.on('chatClosed', () => {
+            alert('Чат был закрыт администратором');
+            document.getElementById('messages').innerHTML = '';
+            currentChatId = null;
+        });
+
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (message && currentChatId) {
+                socket.emit('sendMessage', {
+                    chatId: currentChatId,
+                    message: message,
+                    userId: userId
+                });
+                input.value = '';
+            }
+        }
+
+        function displayMessage(message) {
+            const messagesDiv = document.getElementById('messages');
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${message.userId === userId ? 'sent' : 'received'}`;
+            messageElement.textContent = message.text;
+            messagesDiv.appendChild(messageElement);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Обработка Enter для отправки сообщения
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html> 

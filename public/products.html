@@ -1,165 +1,291 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>eShop - Products</title>
+    <title>Каталог устройств</title>
+    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        .card-img-top {
-            object-fit: cover;
-            height: 200px;
-        }
-        .pagination .page-item.active .page-link {
-            background-color: #007bff;
-            border-color: #007bff;
-        }
-        .pagination .page-link {
-            border-radius: 50%;
-            margin: 0 5px;
-        }
-        .pagination {
-            margin-top: 20px;
-        }
-        .filter-form select,
-        .filter-form input {
+        .filter-section {
+            background-color: #f8f9fa;
+            padding: 20px;
             border-radius: 8px;
+            margin-bottom: 20px;
         }
     </style>
 </head>
 <body>
-<div class="container mt-5">
-    <!-- Добавляем навигационную панель -->
-    <nav class="navbar navbar-expand-lg navbar-light bg-light mb-4">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/products">eShop</a>
-            <div class="d-flex">
-                <div id="authButtons">
-                    <a href="/login" class="btn btn-primary me-2">Войти</a>
-                    <a href="/register" class="btn btn-success me-2">Регистрация</a>
-                </div>
-                <div id="userButtons" style="display: none;">
-                    <div id="adminButton" style="display: none;">
-                        <a href="/admin/roles" class="btn btn-primary me-2">Admin Panel</a>
-                    </div>
-                    <button onclick="logout()" class="btn btn-outline-danger">Выйти</button>
-                </div>
+    <!-- Навигационная панель -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Магазин</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Главная</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/products.html">Каталог</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/cart.html">Корзина</a>
+                    </li>
+                </ul>
+                <ul class="navbar-nav" id="authNav">
+                    <!-- Контент будет добавлен через JavaScript -->
+                </ul>
             </div>
         </div>
     </nav>
 
-    <h1 class="text-center mb-4">Products</h1>
+    <div class="container mt-4">
+        <h1 class="mb-4">Каталог устройств</h1>
 
-    <!-- Фильтры -->
-    <form class="filter-form mb-4" method="get" action="/products">
-        <div class="row g-3">
-            <div class="col-md-4">
-                <label for="catalog" class="form-label">Catalog</label>
-                <select class="form-select" id="catalog" name="catalog">
-                    <option value="">All</option>
-                    <option value="Laptops">Laptops</option>
-                    <option value="Phones">Phones</option>
-                    <option value="Headphones">Headphones</option>
-                </select>
+        <!-- Фильтры -->
+        <div class="filter-section">
+            <div class="row">
+                <div class="col-md-3">
+                    <label for="catalogFilter" class="form-label">Категория</label>
+                    <select class="form-select" id="catalogFilter">
+                        <option value="All">Все категории</option>
+                        <option value="Laptops">Ноутбуки</option>
+                        <option value="Phones">Телефоны</option>
+                        <option value="Headphones">Наушники</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="minPrice" class="form-label">Мин. цена</label>
+                    <input type="number" class="form-control" id="minPrice">
+                </div>
+                <div class="col-md-3">
+                    <label for="maxPrice" class="form-label">Макс. цена</label>
+                    <input type="number" class="form-control" id="maxPrice">
+                </div>
+                <div class="col-md-3">
+                    <label for="sortBy" class="form-label">Сортировка</label>
+                    <select class="form-select" id="sortBy">
+                        <option value="none">Без сортировки</option>
+                        <option value="price">По цене</option>
+                        <option value="name">По названию</option>
+                    </select>
+                </div>
             </div>
-            <div class="col-md-2">
-                <label for="min_price" class="form-label">Min Price</label>
-                <input type="number" class="form-control" id="min_price" name="min_price" step="0.01">
-            </div>
-            <div class="col-md-2">
-                <label for="max_price" class="form-label">Max Price</label>
-                <input type="number" class="form-control" id="max_price" name="max_price" step="0.01">
-            </div>
-            <div class="col-md-2">
-                <label for="sort_by" class="form-label">Sort By</label>
-                <select class="form-select" id="sort_by" name="sort_by">
-                    <option value="">None</option>
-                    <option value="price">Price</option>
-                    <option value="name">Name</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <label for="sort_order" class="form-label">Order</label>
-                <select class="form-select" id="sort_order" name="sort_order">
-                    <option value="asc">Ascending</option>
-                    <option value="desc">Descending</option>
-                </select>
-            </div>
-        </div>
-        <button type="submit" class="btn btn-primary w-100 mt-3">Apply Filters</button>
-    </form>
-
-    <!-- Список продуктов -->
-    <div class="row row-cols-1 row-cols-md-3 g-4">
-        {{range .}}
-        <div class="col">
-            <div class="card h-100 shadow-lg">
-                <img src="https://via.placeholder.com/300x200" class="card-img-top" alt="{{.Name}}">
-                <div class="card-body">
-                    <h5 class="card-title">{{.Name}}</h5>
-                    <p class="text-primary fw-bold">${{printf "%.2f" .Price}}</p>
-                    <p class="text-muted">{{.Catalog}}</p>
+            <div class="row mt-3">
+                <div class="col">
+                    <button class="btn btn-primary" onclick="applyFilters()">Применить фильтры</button>
                 </div>
             </div>
         </div>
-        {{end}}
+
+        <!-- Список устройств -->
+        <div class="row row-cols-1 row-cols-md-3 g-4" id="productsList">
+            <!-- Продукты будут добавлены через JavaScript -->
+        </div>
     </div>
 
-    <!-- Пагинация -->
-    <nav class="mt-4">
-        <ul class="pagination justify-content-center">
-            <li class="page-item">
-                <a class="page-link" href="?page=1">1</a>
-            </li>
-            <li class="page-item">
-                <a class="page-link" href="?page=2">2</a>
-            </li>
-            <li class="page-item">
-                <a class="page-link" href="?page=3">3</a>
-            </li>
-        </ul>
-    </nav>
-</div>
+    <!-- Bootstrap JS и зависимости -->
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.min.js"></script>
 
-<script>
-document.addEventListener('DOMContentLoaded', async () => {
-    const token = localStorage.getItem('authToken');
-    const authButtons = document.getElementById('authButtons');
-    const userButtons = document.getElementById('userButtons');
+    <script>
+        // Функция загрузки продуктов
+        async function loadProducts(filters = {}) {
+            try {
+                // Формируем URL с параметрами фильтрации
+                const params = new URLSearchParams();
+                if (filters.catalog && filters.catalog !== 'All') params.append('catalog', filters.catalog);
+                if (filters.minPrice) params.append('minPrice', filters.minPrice);
+                if (filters.maxPrice) params.append('maxPrice', filters.maxPrice);
+                if (filters.sortBy && filters.sortBy !== 'none') {
+                    params.append('sortBy', filters.sortBy);
+                    params.append('sortOrder', 'asc');
+                }
 
-    if (token) {
-        try {
-            // Декодируем JWT токен
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            const roles = payload.roles || [];
-            
-            // Показываем кнопки для авторизованного пользователя
-            authButtons.style.display = 'none';
-            userButtons.style.display = 'flex';
-            
-            // Показываем кнопку админ-панели, если пользователь админ
-            if (roles.includes('admin')) {
-                document.getElementById('adminButton').style.display = 'block';
+                const response = await fetch(`/products?${params.toString()}`);
+                const products = await response.json();
+                
+                const productsContainer = document.getElementById('productsList');
+                productsContainer.innerHTML = ''; // Очищаем текущий список
+
+                products.forEach(product => {
+                    console.log('Product data:', product); // Для отладки
+                    const productCard = document.createElement('div');
+                    productCard.className = 'col';
+                    productCard.innerHTML = `
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h5 class="card-title">${product.name}</h5>
+                                <p class="card-text">Цена: $${product.price.toFixed(2)}</p>
+                                <p class="card-text">Категория: ${product.catalog}</p>
+                                <button class="btn btn-primary" onclick="addToCart('${product._id}')">
+                                    Добавить в корзину
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    productsContainer.appendChild(productCard);
+                });
+            } catch (error) {
+                console.error('Error loading products:', error);
+                alert('Ошибка при загрузке продуктов');
             }
-        } catch (error) {
-            console.error('Error parsing token:', error);
-            // В случае ошибки показываем кнопки для неавторизованного пользователя
-            authButtons.style.display = 'flex';
-            userButtons.style.display = 'none';
         }
-    } else {
-        // Если токена нет, показываем кнопки для неавторизованного пользователя
-        authButtons.style.display = 'flex';
-        userButtons.style.display = 'none';
-    }
-});
 
-function logout() {
-    localStorage.removeItem('authToken');
-    window.location.href = '/products';
-}
-</script>
+        // Функция добавления в корзину
+        async function addToCart(productId) {
+            try {
+                console.log('Starting addToCart with productId:', productId);
+                
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    alert('Пожалуйста, войдите в систему');
+                    window.location.href = '/login.html';
+                    return;
+                }
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+                const requestData = {
+                    productId: productId,
+                    quantity: 1,
+                    action: 'add'  // Добавляем действие
+                };
+
+                console.log('Sending request:', requestData);
+
+                const response = await fetch('/cart', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                console.log('Response status:', response.status);
+
+                // Проверяем, есть ли тело ответа
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    const result = await response.json();
+                    console.log('Response data:', result);
+
+                    if (result.success) {
+                        alert('Товар успешно добавлен в корзину');
+                    } else {
+                        throw new Error(result.message || 'Failed to add to cart');
+                    }
+                } else {
+                    const textResponse = await response.text();
+                    console.log('Text response:', textResponse);
+                    throw new Error('Invalid response format');
+                }
+            } catch (error) {
+                console.error('Error in addToCart:', error);
+                alert('Ошибка при добавлении в корзину: ' + error.message);
+            }
+        }
+
+        // Функция применения фильтров
+        function applyFilters() {
+            const filters = {
+                catalog: document.getElementById('catalogFilter').value,
+                minPrice: document.getElementById('minPrice').value,
+                maxPrice: document.getElementById('maxPrice').value,
+                sortBy: document.getElementById('sortBy').value
+            };
+            loadProducts(filters);
+        }
+
+        // Обновляем функцию updateAuthNav
+        async function updateAuthNav() {
+            const authNav = document.getElementById('authNav');
+            const token = localStorage.getItem('token');
+            
+            console.log('Token:', token); // Отладочная информация
+            
+            if (token) {
+                try {
+                    console.log('Отправляем запрос на /current-user'); // Отладочная информация
+                    const response = await fetch('/current-user', {
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    });
+                    
+                    console.log('Ответ сервера:', response.status); // Отладочная информация
+                    
+                    if (response.ok) {
+                        const userData = await response.json();
+                        console.log('Данные пользователя:', userData); // Отладочная информация
+                        authNav.innerHTML = `
+                            <li class="nav-item">
+                                <span class="nav-link text-light">Привет, ${userData.email}</span>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" onclick="logout()">Выход</a>
+                            </li>
+                        `;
+                    } else {
+                        console.log('Ответ не ok, очищаем токен'); // Отладочная информация
+                        localStorage.removeItem('token');
+                        showLoginButtons();
+                    }
+                } catch (error) {
+                    console.error('Ошибка при получении данных пользователя:', error);
+                    showLoginButtons();
+                }
+            } else {
+                console.log('Токен отсутствует, показываем кнопки входа'); // Отладочная информация
+                showLoginButtons();
+            }
+        }
+
+        // Добавляем вспомогательную функцию для отображения кнопок входа/регистрации
+        function showLoginButtons() {
+            const authNav = document.getElementById('authNav');
+            authNav.innerHTML = `
+                <li class="nav-item">
+                    <a class="nav-link" href="/login.html">Вход</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/register.html">Регистрация</a>
+                </li>
+            `;
+        }
+
+        // Обновляем функцию logout
+        async function logout() {
+            try {
+                const response = await fetch('/logout', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (response.ok) {
+                    // Очищаем данные авторизации
+                    localStorage.removeItem('token');
+                    // Обновляем навигацию
+                    updateAuthNav();
+                    // Перенаправляем на страницу входа
+                    window.location.href = '/login.html';
+                } else {
+                    console.error('Ошибка при выходе из системы');
+                }
+            } catch (error) {
+                console.error('Ошибка при выходе из системы:', error);
+            }
+        }
+
+        // Загружаем продукты при загрузке страницы
+        document.addEventListener('DOMContentLoaded', () => {
+            loadProducts();
+            updateAuthNav();
+        });
+    </script>
 </body>
-</html>
+</html> 

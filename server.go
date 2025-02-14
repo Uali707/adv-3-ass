@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
+
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/time/rate"
 	"gopkg.in/gomail.v2"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 	"html/template" // Добавьте этот импорт для шаблонов
 	"io"
 	"log"
@@ -18,8 +24,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+
 	"strconv"
-	"sync"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -38,32 +45,34 @@ type UserActionLog struct {
 
 // Добавляем эти структуры перед структурой User
 type Permission struct {
-	ID          uint   `gorm:"primaryKey"`
-	Name        string `gorm:"type:varchar(50);unique;not null"`
-	Description string `gorm:"type:text"`
+	ID          primitive.ObjectID `bson:"_id,omitempty"`
+	Name        string             `bson:"name"`
+	Description string             `bson:"description"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
 type Role struct {
-	ID          uint         `gorm:"primaryKey"`
-	Name        string       `gorm:"type:varchar(50);unique;not null"`
-	Description string       `gorm:"type:text"`
-	Permissions []Permission `gorm:"many2many:role_permissions;"`
+	ID          primitive.ObjectID `bson:"_id" json:"_id"`
+	Name        string             `bson:"name" json:"name"`
+	Description string             `bson:"description"`
+	Permissions []Permission       `bson:"permissions"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
-// Обновляем структуру User, добавляя поле Roles
+// Структура пользователя
 type User struct {
-	gorm.Model
-	Email             string `gorm:"unique"`
-	PasswordHash      string
-	VerificationToken string // Добавляем поле для токена верификации
-	IsVerified        bool
-	OTP               string
-	OTPExpiresAt      time.Time
-	Roles             []Role `gorm:"many2many:user_roles;"`
+	ID              primitive.ObjectID   `bson:"_id" json:"_id"`
+	Email           string               `bson:"email" json:"email"`
+	Password        string               `bson:"password" json:"-"` // Не отправляем пароль клиенту
+	CreatedAt       time.Time            `bson:"created_at" json:"created_at"`
+	UpdatedAt       time.Time            `bson:"updated_at" json:"updated_at"`
+	OTP             string               `bson:"otp,omitempty" json:"-"`
+	OTPExpiresAt    time.Time            `bson:"otp_expires_at,omitempty" json:"-"`
+	TempToken       string               `bson:"temp_token,omitempty" json:"-"`
+	RoleIDs         []primitive.ObjectID `bson:"role_ids" json:"role_ids"`
+	IsEmailVerified bool                 `bson:"is_email_verified" json:"is_email_verified"`
 }
 
 var logFile = "activity_logs.json" // Путь к файлу логов
@@ -94,38 +103,79 @@ func logToFile(logEntry UserActionLog) {
 	}
 }
 
-// Структура для данных о товаре
+// Обновляем структуру Device
 type Device struct {
-	ID      uint    `gorm:"primaryKey"`
-	Name    string  `gorm:"type:varchar(100)"`
-	Price   float64 `gorm:"type:decimal(10,2)"`
-	Catalog string  `gorm:"type:varchar(50)"`
+	ID      primitive.ObjectID `bson:"_id" json:"_id"`
+	Name    string             `bson:"name" json:"name"`
+	Price   float64            `bson:"price" json:"price"`
+	Catalog string             `bson:"catalog" json:"catalog"`
 }
 
+// Исправляем структуру SupportMessage для MongoDB
 type SupportMessage struct {
-	ID         uint      `gorm:"primaryKey"`
-	UserEmail  string    `gorm:"type:varchar(100);not null"`
-	Subject    string    `gorm:"type:varchar(255);not null"`
-	Message    string    `gorm:"type:text;not null"`
-	Attachment string    `gorm:"type:varchar(255)"`
-	CreatedAt  time.Time `gorm:"autoCreateTime"`
+	ID         primitive.ObjectID `bson:"_id,omitempty"`
+	UserEmail  string             `bson:"user_email"`
+	Subject    string             `bson:"subject"`
+	Message    string             `bson:"message"`
+	Attachment string             `bson:"attachment"`
+	CreatedAt  time.Time          `bson:"created_at"`
 }
 
+// Обновляем структуру SMSCode, добавляя поле ID
 type SMSCode struct {
-	Phone     string
-	Code      string
-	CreatedAt time.Time
-	Used      bool
+	ID        primitive.ObjectID `bson:"_id,omitempty"`
+	Phone     string             `bson:"phone"`
+	Code      string             `bson:"code"`
+	CreatedAt time.Time          `bson:"created_at"`
+	Used      bool               `bson:"used"`
+}
+
+// Обновляем структуру CartItem - убираем поле Currency
+type CartItem struct {
+	ProductID primitive.ObjectID `bson:"product_id" json:"productId"`
+	Name      string             `bson:"name" json:"name"`
+	Price     float64            `bson:"price" json:"price"`
+	Quantity  int                `bson:"quantity" json:"quantity"`
+}
+
+type Cart struct {
+	ID        primitive.ObjectID `bson:"_id" json:"id"`
+	UserID    primitive.ObjectID `bson:"user_id" json:"userId"`
+	Items     []CartItem         `bson:"items" json:"items"`
+	Total     float64            `bson:"total" json:"total"`
+	CreatedAt time.Time          `bson:"created_at" json:"createdAt"`
+	UpdatedAt time.Time          `bson:"updated_at" json:"updatedAt"`
+}
+
+type Transaction struct {
+	ID        primitive.ObjectID `bson:"_id" json:"id"`
+	UserID    primitive.ObjectID `bson:"user_id" json:"user_id"`
+	CartID    primitive.ObjectID `bson:"cart_id" json:"cart_id"`
+	Total     float64            `bson:"total" json:"total"`
+	Status    string             `bson:"status" json:"status"`
+	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time          `bson:"updated_at" json:"updated_at"`
+}
+
+// Структура для запроса добавления в корзину
+type AddToCartRequest struct {
+	ProductID string `json:"productId"`
+	Quantity  int    `json:"quantity"`
 }
 
 var (
-	db              *gorm.DB
+	client          *mongo.Client
+	database        *mongo.Database
+	usersCol        *mongo.Collection
+	rolesCol        *mongo.Collection
+	devicesCol      *mongo.Collection
+	smsCodesCol     *mongo.Collection
+	cartsCol        *mongo.Collection
+	transactionsCol *mongo.Collection
+	productsCol     *mongo.Collection
 	logger          = logrus.New()
-	limiter         = rate.NewLimiter(rate.Every(1*time.Second), 1) // Лимит 5 запросов в секунду для всех
-	clientLimiter   = make(map[string]*rate.Limiter)
-	mu              sync.Mutex
-	smsCodesStorage = make(map[string]SMSCode)
-	jwtSecret       = []byte("your-secret-key") // В продакшене используйте безопасный ключ
+	limiter         = rate.NewLimiter(rate.Every(1*time.Second), 1)
+	jwtSecret       = []byte("your-secret-key")
 )
 
 // Инициализация логирования
@@ -136,37 +186,55 @@ func init() {
 	logger.SetOutput(os.Stdout)
 	// Уровень логирования
 	logger.SetLevel(logrus.InfoLevel)
+	// Загружаем переменные окружения из .env файла
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found")
+	}
 }
 
 // Инициализация базы данных
 func initDB() {
+	ctx := context.Background()
+
+	// Подключение к MongoDB
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
 	var err error
-
-	// Получаем строку подключения из переменной окружения
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		// Значение по умолчанию для локальной разработки
-		dsn = "host=localhost user=postgres password=newpassword dbname=advprog port=5432 sslmode=disable"
-	}
-
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	client, err = mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		logger.WithFields(logrus.Fields{
-			"dsn": dsn,
-		}).Fatal("Failed to connect to database")
+		logger.WithError(err).Fatal("Failed to connect to MongoDB")
 	}
 
-	logger.Info("Database connected successfully")
-
-	// Добавляем миграцию User
-	if err := db.AutoMigrate(&User{}); err != nil {
-		logger.Fatal("User migration failed: ", err)
+	// Проверка подключения
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to ping MongoDB")
 	}
 
-	// Миграция модели Device
-	if err := db.AutoMigrate(&Device{}); err != nil {
-		logger.Fatal("Device migration failed: ", err)
+	// Инициализация базы данных и коллекций
+	database = client.Database("advprog")
+	usersCol = database.Collection("users")
+	rolesCol = database.Collection("roles")
+	devicesCol = database.Collection("devices")
+	smsCodesCol = database.Collection("sms_codes")
+	cartsCol = database.Collection("carts")
+	transactionsCol = database.Collection("transactions")
+
+	// Создание индексов
+	_, err = usersCol.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "email", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create email index")
 	}
+
+	// Инициализируем роли и разрешения
+	initializeRolesAndPermissions()
+
+	// Инициализируем устройства
+	initializeDevices()
+
+	logger.Info("MongoDB connected and initialized successfully")
 }
 
 // Обработка ошибок
@@ -177,7 +245,7 @@ func handleError(w http.ResponseWriter, err error, message string, statusCode in
 	http.Error(w, message, statusCode)
 }
 
-// Обработчик для отправки сообщений в поддержку
+// Исправляем функцию supportHandler
 func supportHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		// Загружаем HTML-шаблон для формы поддержки
@@ -225,21 +293,27 @@ func supportHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Сохраняем сообщение в базу данных
+		// Исправляем сохранение сообщения в MongoDB
 		supportMessage := SupportMessage{
+			ID:         primitive.NewObjectID(),
 			UserEmail:  userEmail,
 			Subject:    subject,
 			Message:    message,
 			Attachment: attachmentPath,
+			CreatedAt:  time.Now(),
 		}
 
-		if err := db.Create(&supportMessage).Error; err != nil {
-			handleError(w, err, "Failed to save support message1", http.StatusInternalServerError)
+		if _, err := database.Collection("support_messages").InsertOne(context.Background(), supportMessage); err != nil {
+			handleError(w, err, "Failed to save support message", http.StatusInternalServerError)
 			return
 		}
 
 		// Отправляем email
-		err = sendEmail(userEmail, subject, message, attachmentPath)
+		err = sendEmail(EmailData{
+			To:      userEmail,
+			Subject: subject,
+			Body:    message,
+		})
 		if err != nil {
 			handleError(w, err, "Failed to send email", http.StatusInternalServerError)
 			return
@@ -250,54 +324,78 @@ func supportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Обновляем функцию отправки email для поддержки вложений
-func sendEmail(to, subject, body, attachmentPath string) error {
-	logger.WithFields(logrus.Fields{
-		"to":             to,
-		"subject":        subject,
-		"has_attachment": attachmentPath != "",
-	}).Info("Attempting to send email")
+// Конфигурация SMTP
+const (
+	smtpHost       = "smtp.gmail.com"
+	smtpPort       = 587
+	senderEmail    = "adilhan2040@gmail.com"
+	senderPassword = "cnidyxyehqdnbqlp"
+)
 
-	// Настройки SMTP
+// EmailData структура для отправки email
+type EmailData struct {
+	To      string
+	Subject string
+	Body    string
+}
+
+// Изменяем функцию sendEmail
+func sendEmail(data EmailData) error {
 	m := gomail.NewMessage()
-	m.SetHeader("From", "adilhan2040@gmail.com") // Ваш email
-	m.SetHeader("To", to)
-	m.SetHeader("Subject", subject)
-	m.SetBody("text/html", body)
+	m.SetHeader("From", senderEmail)
+	m.SetHeader("To", data.To)
+	m.SetHeader("Subject", data.Subject)
+	m.SetBody("text/html", data.Body)
 
-	// Добавляем вложение, если оно есть
-	if attachmentPath != "" {
-		// Проверяем существование файла
-		if _, err := os.Stat(attachmentPath); err == nil {
-			m.Attach(attachmentPath)
-			logger.WithField("attachment", attachmentPath).Info("Added attachment to email")
-		} else {
-			logger.WithError(err).Error("Attachment file not found")
-			return fmt.Errorf("attachment file not found: %v", err)
-		}
-	}
+	d := gomail.NewDialer(smtpHost, smtpPort, senderEmail, senderPassword)
 
-	// Создаем SMTP клиент
-	d := gomail.NewDialer(
-		"smtp.gmail.com",        // SMTP сервер
-		587,                     // Порт
-		"adilhan2040@gmail.com", // Ваш email
-		"cnidyxyehqdnbqlp",      // Ваш пароль приложения
-	)
-
-	// Отправляем email
 	if err := d.DialAndSend(m); err != nil {
-		logger.WithFields(logrus.Fields{
-			"error": err,
-			"to":    to,
-		}).Error("Failed to send email")
+		log.Printf("Ошибка отправки email: %v", err)
 		return err
 	}
-
-	logger.WithFields(logrus.Fields{
-		"to": to,
-	}).Info("Email sent successfully")
 	return nil
+}
+
+// Отправка верификационного email
+func sendVerificationEmail(email, link string) error {
+	emailData := EmailData{
+		To:      email,
+		Subject: "Verify your email address",
+		Body: fmt.Sprintf(`
+Hello!
+
+Thank you for registering. Please click the link below to verify your email address:
+
+%s
+
+If you didn't register for an account, please ignore this email.
+
+Best regards,
+Your Application Team`, link),
+	}
+
+	return sendEmail(emailData)
+}
+
+// Отправка OTP
+func sendOTPEmail(email, otp string) error {
+	emailData := EmailData{
+		To:      email,
+		Subject: "Your Login OTP",
+		Body: fmt.Sprintf(`
+Hello!
+
+Your one-time password (OTP) for login is: %s
+
+This OTP will expire in 5 minutes.
+
+If you didn't request this OTP, please ignore this email.
+
+Best regards,
+Your Application Team`, otp),
+	}
+
+	return sendEmail(emailData)
 }
 
 func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -310,80 +408,98 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Обработчик для отображения товаров
+// Исправляем функцию productsHandler
 func productsHandler(w http.ResponseWriter, r *http.Request) {
-	userIP := r.RemoteAddr
-	userAgent := r.UserAgent()
+	// Устанавливаем заголовки CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
 
-	// Логирование действия
-	logToFile(UserActionLog{
-		UserIP:    userIP,
-		UserAgent: userAgent,
-		Endpoint:  "/products",
-		Method:    r.Method,
-		Action:    "View or filter products",
-		Params:    r.URL.RawQuery, // Включает параметры фильтрации, если они есть
-		CreatedAt: time.Now(),
-	})
+	// Обрабатываем preflight запрос
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
-	var devices []Device
-	query := db
+	// Проверяем метод
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
 
-	// Фильтрация по каталогу
+	// Получаем параметры фильтрации
 	catalog := r.URL.Query().Get("catalog")
-	if catalog != "" {
-		query = query.Where("catalog = ?", catalog)
+	minPriceStr := r.URL.Query().Get("minPrice")
+	maxPriceStr := r.URL.Query().Get("maxPrice")
+	sortBy := r.URL.Query().Get("sortBy")
+	sortOrder := r.URL.Query().Get("sortOrder")
+
+	// Создаем фильтр
+	filter := bson.M{}
+	if catalog != "" && catalog != "All" {
+		filter["catalog"] = catalog
 	}
 
-	// Фильтрация по цене
-	minPrice := r.URL.Query().Get("min_price")
-	if minPrice != "" {
-		if min, err := strconv.ParseFloat(minPrice, 64); err == nil {
-			query = query.Where("price >= ?", min)
+	// Добавляем фильтр по цене
+	if minPriceStr != "" || maxPriceStr != "" {
+		priceFilter := bson.M{}
+		if minPriceStr != "" {
+			minPrice, err := strconv.ParseFloat(minPriceStr, 64)
+			if err == nil {
+				priceFilter["$gte"] = minPrice
+			}
+		}
+		if maxPriceStr != "" {
+			maxPrice, err := strconv.ParseFloat(maxPriceStr, 64)
+			if err == nil {
+				priceFilter["$lte"] = maxPrice
+			}
+		}
+		if len(priceFilter) > 0 {
+			filter["price"] = priceFilter
 		}
 	}
-	maxPrice := r.URL.Query().Get("max_price")
-	if maxPrice != "" {
-		if max, err := strconv.ParseFloat(maxPrice, 64); err == nil {
-			query = query.Where("price <= ?", max)
+
+	// Создаем опции сортировки
+	opts := options.Find()
+	if sortBy != "" && sortBy != "none" {
+		sortDirection := 1
+		if sortOrder == "desc" {
+			sortDirection = -1
 		}
+		opts.SetSort(bson.D{{Key: sortBy, Value: sortDirection}})
 	}
 
-	// Сортировка
-	sortBy := r.URL.Query().Get("sort_by")
-	if sortBy != "" {
-		sortOrder := r.URL.Query().Get("sort_order")
-		if sortOrder != "desc" {
-			sortOrder = "asc"
-		}
-		query = query.Order(fmt.Sprintf("%s %s", sortBy, sortOrder))
-	}
-
-	// Пагинация
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	pageSize := 5
-	offset := (page - 1) * pageSize
-	query = query.Offset(offset).Limit(pageSize)
-
-	// Получение данных из базы
-	if err := query.Find(&devices).Error; err != nil {
-		handleError(w, err, "Failed to fetch devices", http.StatusInternalServerError)
-		return
-	}
-
-	// Рендеринг HTML-шаблона
-	tmpl, err := template.ParseFiles("./public/products.html")
+	// Получаем продукты из базы данных
+	cursor, err := devicesCol.Find(context.Background(), filter, opts)
 	if err != nil {
-		handleError(w, err, "Failed to load template", http.StatusInternalServerError)
+		logger.WithError(err).Error("Failed to fetch products")
+		http.Error(w, `{"error":"Failed to fetch products"}`, http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var products []Device
+	if err = cursor.All(context.Background(), &products); err != nil {
+		logger.WithError(err).Error("Failed to decode products")
+		http.Error(w, `{"error":"Failed to decode products"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Передача данных в шаблон
-	if err := tmpl.Execute(w, devices); err != nil {
-		handleError(w, err, "Failed to render template", http.StatusInternalServerError)
+	// Добавляем логирование для отладки
+	for _, product := range products {
+		logger.WithFields(logrus.Fields{
+			"id":   product.ID.Hex(),
+			"name": product.Name,
+		}).Info("Sending product")
+	}
+
+	// Возвращаем результат
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(products); err != nil {
+		logger.WithError(err).Error("Failed to encode response")
+		http.Error(w, `{"error":"Failed to encode response"}`, http.StatusInternalServerError)
 		return
 	}
 }
@@ -409,369 +525,455 @@ func gracefulShutdown(srv *http.Server) {
 	logger.Info("Server gracefully stopped")
 }
 
-// Обновляем функцию generateVerificationCode
-func generateVerificationCode() string {
-	// Генерируем случайный код из 6 цифр
-	code := fmt.Sprintf("%06d", rand.Intn(1000000))
-	return code
-}
-
-// Функция для отправки email с кодом подтверждения
-func sendVerificationEmail(userEmail, verificationCode string) error {
-	m := gomail.NewMessage()
-	m.SetHeader("From", "adilhan2040@gmail.com")
-	m.SetHeader("To", userEmail)
-	m.SetHeader("Subject", "Email Verification")
-	m.SetBody("text/plain", fmt.Sprintf("Click the link to verify your email: http://localhost:3000/verify?code=%s", verificationCode))
-
-	d := gomail.NewDialer("smtp.gmail.com", 587, "adilhan2040@gmail.com", "cnidyxyehqdnbqlp")
-	return d.DialAndSend(m)
-}
-
-// Обновляем обработчик регистрации
+// Обработчик регистрации
 func registerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		tmpl, err := template.ParseFiles("public/register.html")
-		if err != nil {
-			handleError(w, err, "Failed to load template", http.StatusInternalServerError)
-			return
-		}
-		tmpl.Execute(w, nil)
+	// Настраиваем CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Предварительный запрос OPTIONS
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	if r.Method == http.MethodPost {
-		var user User
-		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-			logger.WithError(err).Error("Failed to decode registration request")
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-
-		// Проверяем, не существует ли уже пользователь
-		var existingUser User
-		if err := db.Where("email = ?", user.Email).First(&existingUser).Error; err == nil {
-			logger.WithField("email", user.Email).Error("User already exists")
-			http.Error(w, "User already exists", http.StatusConflict)
-			return
-		}
-
-		// Генерируем уникальный токен для верификации
-		verificationToken := generateVerificationToken()
-
-		// Хешируем пароль
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.PasswordHash), bcrypt.DefaultCost)
-		if err != nil {
-			logger.WithError(err).Error("Failed to hash password")
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		// Создаем нового пользователя
-		newUser := User{
-			Email:             user.Email,
-			PasswordHash:      string(hashedPassword),
-			VerificationToken: verificationToken,
-			IsVerified:        false,
-		}
-
-		// Сохраняем пользователя в базе данных
-		if err := db.Create(&newUser).Error; err != nil {
-			logger.WithError(err).Error("Failed to create user")
-			http.Error(w, "Failed to create user", http.StatusInternalServerError)
-			return
-		}
-
-		// Формируем ссылку для верификации
-		verificationLink := fmt.Sprintf("http://localhost:3000/verify-email?token=%s", verificationToken)
-
-		// Отправляем email со ссылкой верификации
-		emailBody := fmt.Sprintf(`
-			<h1>Welcome to our service!</h1>
-			<p>Please click the link below to verify your email address:</p>
-			<p><a href="%s">Verify Email</a></p>
-			<p>If the link doesn't work, copy and paste this URL into your browser:</p>
-			<p>%s</p>
-		`, verificationLink, verificationLink)
-
-		if err := sendEmail(user.Email, "Email Verification", emailBody, ""); err != nil {
-			logger.WithFields(logrus.Fields{
-				"error": err,
-				"email": user.Email,
-			}).Error("Failed to send verification email")
-
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{
-				"message": "User created but verification email failed to send",
-			})
-			return
-		}
-
-		logger.WithFields(logrus.Fields{
-			"email": user.Email,
-		}).Info("User registered successfully and verification email sent")
-
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{
-			"message": "Registration successful! Please check your email to verify your account.",
-		})
+	// Проверяем метод
+	if r.Method != "POST" {
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-}
+	// Читаем тело запроса
+	var user struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
 
-// Добавляем функцию для генерации токена верификации
-func generateVerificationToken() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
-}
-
-// Добавляем обработчик верификации email
-func verifyEmailHandler(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "Verification token is required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		log.Printf("Ошибка при декодировании JSON: %v", err)
+		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
-	var user User
-	if err := db.Where("verification_token = ?", token).First(&user).Error; err != nil {
-		logger.WithError(err).Error("Invalid verification token")
-		http.Error(w, "Invalid verification token", http.StatusBadRequest)
+	// Проверяем данные
+	if user.Email == "" || user.Password == "" {
+		http.Error(w, `{"error":"Email and password are required"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Обновляем статус верификации пользователя
-	user.IsVerified = true
-	user.VerificationToken = "" // Очищаем токен после верификации
-	if err := db.Save(&user).Error; err != nil {
-		logger.WithError(err).Error("Failed to update user verification status")
-		http.Error(w, "Failed to verify email", http.StatusInternalServerError)
-		return
-	}
-
-	// Отображаем страницу успешной верификации
-	w.Header().Set("Content-Type", "text/html")
-	successHTML := `
-	<!DOCTYPE html>
-	<html>
-	<head>
-		<title>Email Verified</title>
-		<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-	</head>
-	<body>
-		<div class="container mt-5">
-			<div class="alert alert-success" role="alert">
-				<h4 class="alert-heading">Email Verified Successfully!</h4>
-				<p>Your email has been verified. You can now <a href="/login">login</a> to your account.</p>
-			</div>
-		</div>
-	</body>
-	</html>
-	`
-	w.Write([]byte(successHTML))
-}
-
-// Обработчик для подтверждения email
-func verifyHandler(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		http.Error(w, "Verification token is required", http.StatusBadRequest)
-		return
-	}
-
-	var user User
-	if err := db.Where("verification_token = ?", token).First(&user).Error; err != nil {
-		logger.WithError(err).Error("Invalid verification token")
-		http.Error(w, "Invalid verification token", http.StatusBadRequest)
-		return
-	}
-
-	// Обновляем статус верификации пользователя
-	user.IsVerified = true
-	user.VerificationToken = "" // Очищаем токен после верификации
-	if err := db.Save(&user).Error; err != nil {
-		logger.WithError(err).Error("Failed to update user verification status")
-		http.Error(w, "Failed to verify email", http.StatusInternalServerError)
-		return
-	}
-
-	// Перенаправляем на страницу входа с сообщением об успешной верификации
-	http.Redirect(w, r, "/login?verified=1", http.StatusSeeOther)
-}
-
-func hashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	return string(bytes), err
-}
-
-// Проверка пароля
-func checkPasswordHash(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	// Хешируем пароль
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
-		logger.WithError(err).Error("Password hash comparison failed")
-		return false
+		log.Printf("Ошибка при хешировании пароля: %v", err)
+		http.Error(w, `{"error":"Internal server error"}`, http.StatusInternalServerError)
+		return
 	}
-	return true
+
+	// Создаем ID для нового пользователя
+	userID := primitive.NewObjectID()
+
+	// Создаем пользователя в базе данных
+	_, err = client.Database("ass4").Collection("users").InsertOne(context.Background(), bson.M{
+		"_id":      userID,
+		"email":    user.Email,
+		"password": string(hashedPassword),
+		"roles":    []string{"user"},
+	})
+
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			http.Error(w, `{"error":"Email already exists"}`, http.StatusConflict)
+			return
+		}
+		log.Printf("Ошибка при создании пользователя: %v", err)
+		http.Error(w, `{"error":"Failed to create user"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем успешный ответ
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "User registered successfully",
+	})
+
+	verificationToken := generateToken() // Используем существующую функцию generateToken
+
+	verificationLink := fmt.Sprintf("http://localhost:8080/verify?token=%s&email=%s",
+		verificationToken, user.Email)
+	emailBody := fmt.Sprintf(`
+		<h2>Welcome to our service!</h2>
+		<p>Please click the link below to verify your email:</p>
+		<a href="%s">Verify Email</a>
+	`, verificationLink)
+
+	// Сохраняем токен верификации в базе данных
+	_, err = usersCol.UpdateOne(
+		context.Background(),
+		bson.M{"_id": userID}, // Используем созданный userID
+		bson.M{"$set": bson.M{"email_verify_token": verificationToken}},
+	)
+	if err != nil {
+		log.Printf("Ошибка сохранения токена верификации: %v", err)
+		return
+	}
+
+	// Отправляем email
+	if err := sendEmail(EmailData{
+		To:      user.Email,
+		Subject: "Verify Your Email",
+		Body:    emailBody,
+	}); err != nil {
+		log.Printf("Ошибка отправки верификационного email: %v", err)
+	}
 }
 
 // Генерация OTP
 func generateOTP() string {
-	otp := strconv.Itoa(rand.Intn(1000000)) // Генерация 6-значного OTP
-	return otp
+	rand.Seed(time.Now().UnixNano())
+	return fmt.Sprintf("%06d", rand.Intn(1000000))
 }
 
-// Отправка OTP (в реальном проекте отправка на email или SMS)
-func sendOTP(otp, email string) {
-	fmt.Printf("OTP for user %s is: %s\n", email, otp) // Это просто пример
-}
-
-// Обновляем функцию loginHandler
-func loginHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		tmpl, err := template.ParseFiles("public/login.html")
-		if err != nil {
-			handleError(w, err, "Failed to load template", http.StatusInternalServerError)
-			return
-		}
-		tmpl.Execute(w, nil)
+// Обработчик верификации email
+func verifyEmailHandler(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Invalid verification token", http.StatusBadRequest)
 		return
 	}
 
-	if r.Method == http.MethodPost {
-		email := r.FormValue("email")
-		password := r.FormValue("password")
+	// Ищем пользователя по токену верификации
+	var user User
+	err := usersCol.FindOne(context.Background(), bson.M{"email_verify_token": token}).Decode(&user)
+	if err != nil {
+		http.Error(w, "Invalid verification token", http.StatusBadRequest)
+		return
+	}
 
-		logger.WithFields(logrus.Fields{
-			"email":           email,
-			"password_length": len(password),
-		}).Info("Login attempt")
+	// Получаем роль пользователя
+	var userRole Role
+	err = rolesCol.FindOne(context.Background(), bson.M{"name": "user"}).Decode(&userRole)
+	if err != nil {
+		http.Error(w, "Failed to get user role", http.StatusInternalServerError)
+		return
+	}
 
-		var user User
-		result := db.Where("email = ?", email).First(&user)
-		if result.Error != nil {
-			logger.WithFields(logrus.Fields{
-				"error": result.Error,
-				"email": email,
-			}).Error("User not found")
-			http.Error(w, "Неверный email или пароль", http.StatusUnauthorized)
-			return
-		}
+	// Обновляем пользователя
+	_, err = usersCol.UpdateOne(
+		context.Background(),
+		bson.M{"_id": user.ID},
+		bson.M{
+			"$set": bson.M{
+				"is_email_verified": true,
+				"role_ids":          []primitive.ObjectID{userRole.ID},
+			},
+			"$unset": bson.M{
+				"email_verify_token": "",
+			},
+		},
+	)
+	if err != nil {
+		http.Error(w, "Failed to verify email", http.StatusInternalServerError)
+		return
+	}
 
-		logger.WithFields(logrus.Fields{
-			"user_id":              user.ID,
-			"email":                user.Email,
-			"password_hash_length": len(user.PasswordHash),
-		}).Info("User found")
+	// Перенаправляем на страницу входа
+	http.Redirect(w, r, "/login.html", http.StatusSeeOther)
+}
 
-		if !checkPasswordHash(password, user.PasswordHash) {
-			logger.WithFields(logrus.Fields{
-				"email":          email,
-				"input_password": password,
-				"stored_hash":    user.PasswordHash,
-			}).Error("Password verification failed")
-			http.Error(w, "Неверный email или пароль", http.StatusUnauthorized)
-			return
-		}
+// Добавьте новый обработчик для оформления заказа
+func checkoutHandler(w http.ResponseWriter, r *http.Request) {
+	// Добавляем CORS заголовки
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
 
-		logger.Info("Успешная аутентификация")
-
-		// Генерация OTP
-		otp := generateOTP()
-		otpExpiresAt := time.Now().Add(10 * time.Minute)
-
-		// Обновляем пользователя с OTP
-		if err := db.Model(&user).Updates(map[string]interface{}{
-			"otp":            otp,
-			"otp_expires_at": otpExpiresAt,
-		}).Error; err != nil {
-			logger.WithError(err).Error("Ошибка при обновлении OTP")
-			http.Error(w, "Ошибка сервера", http.StatusInternalServerError)
-			return
-		}
-
-		// Отправляем OTP на email пользователя
-		emailBody := fmt.Sprintf(`
-			<h1>Your OTP Code</h1>
-			<p>Your one-time password is: <strong>%s</strong></p>
-			<p>This code will expire in 5 minutes.</p>
-		`, otp)
-
-		if err := sendEmail(user.Email, "Your OTP Code", emailBody, ""); err != nil {
-			logger.WithError(err).Error("Failed to send OTP email")
-			http.Error(w, "Failed to send OTP", http.StatusInternalServerError)
-			return
-		}
-
+	// Обрабатываем preflight запрос
+	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Пароль верный. Проверьте email для получения OTP"))
 		return
 	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Получаем ID пользователя из токена
+	userID, err := getUserIDFromToken(r)
+	if err != nil {
+		log.Printf("Auth error: %v", err) // Добавляем логирование
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Получаем корзину пользователя
+	var cart Cart
+	err = cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+	if err != nil {
+		log.Printf("Cart error: %v", err) // Добавляем логирование
+		http.Error(w, `{"error": "Cart not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Создаем новую транзакцию
+	transaction := Transaction{
+		ID:        primitive.NewObjectID(),
+		UserID:    userID,
+		CartID:    cart.ID,
+		Total:     cart.Total,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	_, err = transactionsCol.InsertOne(context.Background(), transaction)
+	if err != nil {
+		log.Printf("Transaction error: %v", err) // Добавляем логирование
+		http.Error(w, `{"error": "Failed to create transaction"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем ответ
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"transactionId": transaction.ID.Hex(),
+	})
 }
 
-// Обновляем функцию otpVerifyHandler
-func otpVerifyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+// В функции main добавьте новые маршруты
+
+// Обработчик входа
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	email := r.FormValue("email")
-	otp := r.FormValue("otp")
+	var loginData struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&loginData); err != nil {
+		http.Error(w, `{"error":"Invalid request format"}`, http.StatusBadRequest)
+		return
+	}
 
 	var user User
-	if err := db.Preload("Roles.Permissions").Where("email = ?", email).First(&user).Error; err != nil {
-		logger.WithError(err).Error("User not found")
-		http.Error(w, "Invalid email", http.StatusUnauthorized)
+	err := usersCol.FindOne(context.Background(), bson.M{"email": loginData.Email}).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			http.Error(w, `{"error":"User not found"}`, http.StatusUnauthorized)
+		} else {
+			http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(loginData.Password)); err != nil {
+		http.Error(w, `{"error":"Invalid password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Создаем JWT токен с user_id
+	claims := jwt.MapClaims{
+		"user_id": user.ID.Hex(),
+		"email":   user.Email,
+		"exp":     time.Now().Add(time.Hour * 24).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+	if err != nil {
+		http.Error(w, `{"error":"Failed to create token"}`, http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"token":   tokenString,
+		"user_id": user.ID.Hex(),
+		"email":   user.Email,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+func getUserIDFromToken(r *http.Request) (primitive.ObjectID, error) {
+	logger := logrus.WithField("func", "getUserIDFromToken")
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return primitive.ObjectID{}, fmt.Errorf("no auth header")
+	}
+
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+	if tokenString == authHeader {
+		return primitive.ObjectID{}, fmt.Errorf("invalid token format")
+	}
+
+	logger.Infof("Token string: %s", tokenString)
+
+	// Парсим токен
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(os.Getenv("JWT_SECRET")), nil
+	})
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to parse token")
+		return primitive.ObjectID{}, fmt.Errorf("invalid token: %v", err)
+	}
+
+	if !token.Valid {
+		return primitive.ObjectID{}, fmt.Errorf("invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		logger.Error("Failed to get claims")
+		return primitive.ObjectID{}, fmt.Errorf("invalid token claims")
+	}
+
+	// Получаем email из claims
+	email, ok := claims["email"].(string)
+	if !ok {
+		logger.Error("Email not found in claims")
+		return primitive.ObjectID{}, fmt.Errorf("email not found in token")
+	}
+
+	// Ищем пользователя по email
+	var user User
+	err = usersCol.FindOne(context.Background(), bson.M{"email": email}).Decode(&user)
+	if err != nil {
+		logger.WithError(err).Error("Failed to find user")
+		return primitive.ObjectID{}, fmt.Errorf("user not found")
+	}
+
+	return user.ID, nil
+}
+
+// Вспомогательные функции
+func generateToken() string {
+	b := make([]byte, 32)
+	for i := range b {
+		b[i] = byte(rand.Intn(256))
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+// Обработчик проверки OTP
+func verifyOTPHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var verifyData struct {
+		TempToken string `json:"tempToken"`
+		OTP       string `json:"otp"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&verifyData); err != nil {
+		logger.WithError(err).Error("Failed to decode request body")
+		http.Error(w, `{"error": "Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Ищем пользователя по временному токену
+	var user User
+	err := usersCol.FindOne(context.Background(), bson.M{
+		"temp_token":     verifyData.TempToken,
+		"otp_expires_at": bson.M{"$gt": time.Now()},
+	}).Decode(&user)
+
+	if err != nil {
+		logger.WithError(err).Error("User not found or OTP expired")
+		http.Error(w, `{"error": "Invalid or expired OTP"}`, http.StatusUnauthorized)
 		return
 	}
 
 	// Проверяем OTP
-	if user.OTP != otp || time.Now().After(user.OTPExpiresAt) {
-		logger.Error("Invalid OTP or OTP expired")
-		http.Error(w, "Invalid OTP", http.StatusUnauthorized)
+	if user.OTP != verifyData.OTP {
+		logger.Error("Invalid OTP provided")
+		http.Error(w, `{"error": "Invalid OTP"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// Очищаем OTP
-	if err := db.Model(&user).Updates(map[string]interface{}{
-		"otp":            "",
-		"otp_expires_at": time.Now(),
-	}).Error; err != nil {
-		logger.WithError(err).Error("Failed to clear OTP")
-	}
+	// Генерируем JWT токен
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["user_id"] = user.ID.Hex()
+	claims["email"] = user.Email
+	claims["exp"] = time.Now().Add(24 * time.Hour).Unix()
 
-	// Создаем JWT токен с информацией о ролях пользователя
-	claims := jwt.MapClaims{
-		"email": user.Email,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
-		"roles": getRoleNames(user.Roles), // Добавляем роли в токен
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtSecret)
+	tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
 	if err != nil {
-		logger.WithError(err).Error("Failed to generate token")
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		logger.WithError(err).Error("Failed to generate JWT token")
+		http.Error(w, `{"error": "Failed to generate token"}`, http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token": tokenString,
-		"roles": getRoleNames(user.Roles),
-	})
+	// Очищаем OTP и временный токен
+	_, err = usersCol.UpdateOne(
+		context.Background(),
+		bson.M{"_id": user.ID},
+		bson.M{
+			"$set": bson.M{
+				"otp":            "",
+				"temp_token":     "",
+				"otp_expires_at": time.Time{},
+			},
+		},
+	)
+
+	if err != nil {
+		logger.WithError(err).Error("Failed to clear OTP data")
+		// Продолжаем выполнение, так как токен уже сгенерирован
+	}
+
+	// Отправляем успешный ответ
+	response := map[string]string{
+		"token":   tokenString,
+		"message": "Login successful",
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.WithError(err).Error("Failed to encode response")
+		http.Error(w, `{"error": "Failed to encode response"}`, http.StatusInternalServerError)
+		return
+	}
+
+	logger.Infof("OTP verified successfully for user: %s", user.Email)
 }
 
 // Вспомогательная функция для получения имен ролей
 func getRoleNames(roles []Role) []string {
-	var roleNames []string
-	for _, role := range roles {
-		roleNames = append(roleNames, role.Name)
+	names := make([]string, len(roles))
+	for i, role := range roles {
+		names[i] = role.Name
 	}
-	return roleNames
+	return names
 }
 
 // Функция для генерации SMS кода
@@ -787,7 +989,7 @@ func sendSMS(phone, code string) error {
 	return nil
 }
 
-// Обработчик для отправки SMS
+// Обновляем функцию handleSendSMS
 func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	phone := r.FormValue("phone")
 	if phone == "" {
@@ -796,11 +998,19 @@ func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	code := generateSMSCode()
-	smsCodesStorage[phone] = SMSCode{
+	smsCode := SMSCode{
+		ID:        primitive.NewObjectID(),
 		Phone:     phone,
 		Code:      code,
 		CreatedAt: time.Now(),
 		Used:      false,
+	}
+
+	// Сохраняем код в MongoDB
+	_, err := smsCodesCol.InsertOne(context.Background(), smsCode)
+	if err != nil {
+		handleError(w, err, "Failed to save SMS code", http.StatusInternalServerError)
+		return
 	}
 
 	if err := sendSMS(phone, code); err != nil {
@@ -811,19 +1021,37 @@ func handleSendSMS(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// Обработчик для проверки SMS кода и выдачи JWT токена
+// Обновляем функцию handleVerifySMS
 func handleVerifySMS(w http.ResponseWriter, r *http.Request) {
 	phone := r.FormValue("phone")
 	code := r.FormValue("code")
 
-	smsCode, exists := smsCodesStorage[phone]
-	if !exists || smsCode.Used || time.Since(smsCode.CreatedAt) > 5*time.Minute {
+	var smsCode SMSCode
+	err := smsCodesCol.FindOne(
+		context.Background(),
+		bson.M{
+			"phone": phone,
+			"code":  code,
+			"used":  false,
+			"created_at": bson.M{
+				"$gt": time.Now().Add(-5 * time.Minute),
+			},
+		},
+	).Decode(&smsCode)
+
+	if err != nil {
 		http.Error(w, "Неверный код или код истек", http.StatusBadRequest)
 		return
 	}
 
-	if smsCode.Code != code {
-		http.Error(w, "Неверный код", http.StatusBadRequest)
+	// Помечаем код как использованный
+	_, err = smsCodesCol.UpdateOne(
+		context.Background(),
+		bson.M{"_id": smsCode.ID},
+		bson.M{"$set": bson.M{"used": true}},
+	)
+	if err != nil {
+		handleError(w, err, "Failed to update SMS code", http.StatusInternalServerError)
 		return
 	}
 
@@ -839,157 +1067,121 @@ func handleVerifySMS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Помечаем код как использованный
-	smsCode.Used = true
-	smsCodesStorage[phone] = smsCode
-
 	// Отправляем токен клиенту
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
 }
 
+// Структура для JWT claims
+type Claims struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	jwt.StandardClaims
+}
+
+// Функция для проверки JWT токена
+func validateToken(tokenString string) (*Claims, error) {
+	// Проверяем, что токен не пустой
+	if tokenString == "" {
+		return nil, errors.New("empty token")
+	}
+
+	// Создаем новый claims
+	claims := &Claims{}
+
+	// Парсим токен
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		// Проверяем метод подписи
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		// Возвращаем секретный ключ для проверки подписи
+		return []byte(jwtSecret), nil
+	})
+
+	// Проверяем ошибки парсинга
+	if err != nil {
+		if err == jwt.ErrSignatureInvalid {
+			return nil, errors.New("invalid token signature")
+		}
+		return nil, err
+	}
+
+	// Проверяем валидность токена
+	if !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+
+	// Проверяем срок действия токена
+	if claims.ExpiresAt < time.Now().Unix() {
+		return nil, errors.New("token expired")
+	}
+
+	return claims, nil
+}
+
 // Middleware для проверки JWT токена
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tokenString := r.Header.Get("Authorization")
-		if tokenString == "" {
-			http.Error(w, "Отсутствует токен авторизации", http.StatusUnauthorized)
+		// Получаем токен из заголовка
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
-		})
+		// Убираем префикс "Bearer "
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
-		if err != nil || !token.Valid {
-			http.Error(w, "Недействительный токен", http.StatusUnauthorized)
+		// Проверяем токен
+		claims, err := validateToken(tokenString)
+		if err != nil {
+			logger.WithError(err).Error("Invalid token")
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Добавляем claims в контекст запроса
+		ctx := context.WithValue(r.Context(), "claims", claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
-// Обработчик для получения списка ролей
-func listRolesHandler(w http.ResponseWriter, r *http.Request) {
-	var roles []Role
-	if err := db.Preload("Permissions").Find(&roles).Error; err != nil {
-		handleError(w, err, "Failed to fetch roles", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(roles)
-}
-
-// Обработчик для получения списка разрешений
-func listPermissionsHandler(w http.ResponseWriter, r *http.Request) {
-	var permissions []Permission
-	if err := db.Find(&permissions).Error; err != nil {
-		handleError(w, err, "Failed to fetch permissions", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(permissions)
-}
-
-// Обработчик для добавления роли
-func addRoleHandler(w http.ResponseWriter, r *http.Request) {
-	var roleData struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Permissions []uint `json:"permissions"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&roleData); err != nil {
-		handleError(w, err, "Invalid request data", http.StatusBadRequest)
-		return
-	}
-
-	var permissions []Permission
-	if err := db.Find(&permissions, roleData.Permissions).Error; err != nil {
-		handleError(w, err, "Failed to fetch permissions", http.StatusInternalServerError)
-		return
-	}
-
-	role := Role{
-		Name:        roleData.Name,
-		Description: roleData.Description,
-		Permissions: permissions,
-	}
-
-	if err := db.Create(&role).Error; err != nil {
-		handleError(w, err, "Failed to create role", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-}
-
-// Обновляем middleware для проверки разрешений
-func permissionMiddleware(requiredPermission string) func(http.HandlerFunc) http.HandlerFunc {
+// Middleware для проверки разрешений
+func permissionMiddleware(permission string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			// Получаем токен из заголовка
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				logger.Error("No Authorization header")
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+		return authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			// Получаем claims из контекста
+			claims := r.Context().Value("claims").(*Claims)
 
-			// Убираем префикс "Bearer " если он есть
-			tokenString := authHeader
-			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-				tokenString = authHeader[7:]
-			}
-
-			// Парсим токен
-			claims := jwt.MapClaims{}
-			token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-				return jwtSecret, nil
-			})
-
+			// Получаем пользователя из базы
+			userID, err := primitive.ObjectIDFromHex(claims.UserID)
 			if err != nil {
-				logger.WithError(err).Error("Failed to parse token")
+				logger.WithError(err).Error("Invalid user ID in token")
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
 				return
 			}
 
-			if !token.Valid {
-				logger.Error("Token is invalid")
-				http.Error(w, "Invalid token", http.StatusUnauthorized)
-				return
-			}
-
-			// Получаем email пользователя из токена
-			email, ok := claims["email"].(string)
-			if !ok {
-				logger.Error("No email in token claims")
-				http.Error(w, "Invalid token claims", http.StatusUnauthorized)
-				return
-			}
-
-			// Получаем пользователя с его ролями и разрешениями
 			var user User
-			if err := db.Preload("Roles.Permissions").Where("email = ?", email).First(&user).Error; err != nil {
-				logger.WithError(err).Error("User not found")
+			err = usersCol.FindOne(r.Context(), bson.M{"_id": userID}).Decode(&user)
+			if err != nil {
+				logger.WithError(err).Error("Failed to fetch user")
 				http.Error(w, "User not found", http.StatusUnauthorized)
 				return
 			}
 
-			// Проверяем наличие требуемого разрешения
+			// Проверяем наличие разрешения
 			hasPermission := false
-			for _, role := range user.Roles {
+			for _, roleID := range user.RoleIDs {
+				var role Role
+				err := rolesCol.FindOne(r.Context(), bson.M{"_id": roleID}).Decode(&role)
+				if err != nil {
+					logger.WithError(err).Error("Failed to fetch role")
+					http.Error(w, "Failed to fetch role", http.StatusInternalServerError)
+					return
+				}
 				for _, perm := range role.Permissions {
-					logger.WithFields(logrus.Fields{
-						"user_email":          email,
-						"permission_required": requiredPermission,
-						"permission_found":    perm.Name,
-					}).Info("Checking permission")
-
-					if perm.Name == requiredPermission {
+					if perm.Name == permission {
 						hasPermission = true
 						break
 					}
@@ -1001,77 +1193,299 @@ func permissionMiddleware(requiredPermission string) func(http.HandlerFunc) http
 
 			if !hasPermission {
 				logger.WithFields(logrus.Fields{
-					"user_email":          email,
-					"permission_required": requiredPermission,
+					"user_id":    userID.Hex(),
+					"permission": permission,
 				}).Error("Permission denied")
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
 
-			next(w, r)
-		}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
-func createDefaultRolesAndPermissions() {
-	// Создаем базовые разрешения
-	permissions := []Permission{
-		{Name: "manage_roles", Description: "Can manage roles and permissions"},
-		{Name: "view_products", Description: "Can view products"},
-		{Name: "manage_products", Description: "Can manage products"},
-		{Name: "manage_users", Description: "Can manage users"},
+// Обработчик для получения списка ролей
+func listRolesHandler(w http.ResponseWriter, r *http.Request) {
+	var roles []Role
+	cursor, err := rolesCol.Find(context.Background(), bson.M{})
+	if err != nil {
+		handleError(w, err, "Failed to fetch roles", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	if err = cursor.All(context.Background(), &roles); err != nil {
+		handleError(w, err, "Failed to decode roles", http.StatusInternalServerError)
+		return
 	}
 
-	for _, perm := range permissions {
-		if err := db.FirstOrCreate(&perm, Permission{Name: perm.Name}).Error; err != nil {
-			logger.WithError(err).Error("Failed to create permission")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(roles)
+}
+
+// Добавляем обработчик для получения списка разрешений
+func listPermissionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Получаем все разрешения из базы
+	cursor, err := database.Collection("permissions").Find(context.Background(), bson.M{})
+	if err != nil {
+		handleError(w, err, "Failed to fetch permissions", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var permissions []Permission
+	if err = cursor.All(context.Background(), &permissions); err != nil {
+		handleError(w, err, "Failed to decode permissions", http.StatusInternalServerError)
+		return
+	}
+
+	// Если разрешений нет, создаем базовые
+	if len(permissions) == 0 {
+		permissions = []Permission{
+			{
+				ID:          primitive.NewObjectID(),
+				Name:        "manage_roles",
+				Description: "Can manage roles and permissions",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+			},
+			{
+				ID:          primitive.NewObjectID(),
+				Name:        "view_products",
+				Description: "Can view products",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+			},
+			{
+				ID:          primitive.NewObjectID(),
+				Name:        "manage_products",
+				Description: "Can manage products",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+			},
+			{
+				ID:          primitive.NewObjectID(),
+				Name:        "manage_users",
+				Description: "Can manage users",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+			},
+		}
+
+		// Сохраняем базовые разрешения
+		for _, perm := range permissions {
+			_, err := database.Collection("permissions").InsertOne(context.Background(), perm)
+			if err != nil {
+				logger.WithError(err).Error("Failed to create permission")
+			}
 		}
 	}
 
-	// Создаем роль администратора
-	adminRole := Role{
-		Name:        "admin",
-		Description: "Administrator role with full access",
-	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(permissions)
+}
 
-	if err := db.FirstOrCreate(&adminRole, Role{Name: "admin"}).Error; err != nil {
-		logger.WithError(err).Error("Failed to create admin role")
+// Обработчик для добавления новой роли
+func addRoleHandler(w http.ResponseWriter, r *http.Request) {
+	// Проверяем метод
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Получаем все разрешения
-	var allPermissions []Permission
-	if err := db.Find(&allPermissions).Error; err != nil {
-		logger.WithError(err).Error("Failed to fetch permissions")
+	// Проверяем токен
+	token := r.Header.Get("Authorization")
+	if token == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Назначаем все разрешения роли администратора
-	if err := db.Model(&adminRole).Association("Permissions").Replace(allPermissions); err != nil {
-		logger.WithError(err).Error("Failed to assign permissions to admin role")
+	// Убираем префикс "Bearer "
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	// Проверяем токен и получаем claims
+	claims, err := validateToken(token)
+	if err != nil {
+		logger.WithError(err).Error("Invalid token")
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	// Находим первого пользователя и назначаем ему роль администратора
+	// Проверяем права доступа
+	userID, err := primitive.ObjectIDFromHex(claims.UserID)
+	if err != nil {
+		logger.WithError(err).Error("Invalid user ID in token")
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Получаем пользователя из базы
 	var user User
-	if err := db.First(&user).Error; err != nil {
-		logger.WithError(err).Error("No users found")
+	err = usersCol.FindOne(context.Background(), bson.M{"_id": userID}).Decode(&user)
+	if err != nil {
+		logger.WithError(err).Error("Failed to fetch user")
+		http.Error(w, "User not found", http.StatusUnauthorized)
 		return
 	}
 
-	// Назначаем роль администратора пользователю
-	if err := db.Model(&user).Association("Roles").Append(&adminRole); err != nil {
-		logger.WithError(err).Error("Failed to assign admin role to user")
+	// Проверяем наличие разрешения manage_roles
+	hasPermission := false
+	for _, roleID := range user.RoleIDs {
+		var role Role
+		err := rolesCol.FindOne(context.Background(), bson.M{"_id": roleID}).Decode(&role)
+		if err != nil {
+			logger.WithError(err).Error("Failed to fetch role")
+			http.Error(w, "Failed to fetch role", http.StatusInternalServerError)
+			return
+		}
+		for _, perm := range role.Permissions {
+			if perm.Name == "manage_roles" {
+				hasPermission = true
+				break
+			}
+		}
+		if hasPermission {
+			break
+		}
+	}
+
+	if !hasPermission {
+		logger.Error("User doesn't have manage_roles permission")
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
+	// Декодируем данные роли
+	var roleData struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Permissions []string `json:"permissions"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&roleData); err != nil {
+		logger.WithError(err).Error("Invalid request data")
+		http.Error(w, "Invalid request data", http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем обязательные поля
+	if roleData.Name == "" {
+		http.Error(w, "Role name is required", http.StatusBadRequest)
+		return
+	}
+
+	var permissions []Permission
+
+	// Проверяем, есть ли выбранные разрешения
+	if len(roleData.Permissions) > 0 {
+		var permissionIDs []primitive.ObjectID
+		for _, permID := range roleData.Permissions {
+			objID, err := primitive.ObjectIDFromHex(permID)
+			if err != nil {
+				logger.WithError(err).Error("Invalid permission ID")
+				http.Error(w, "Invalid permission ID", http.StatusBadRequest)
+				return
+			}
+			permissionIDs = append(permissionIDs, objID)
+		}
+
+		cursor, err := database.Collection("permissions").Find(
+			context.Background(),
+			bson.M{"_id": bson.M{"$in": permissionIDs}},
+		)
+		if err != nil {
+			logger.WithError(err).Error("Failed to fetch permissions")
+			handleError(w, err, "Failed to fetch permissions", http.StatusInternalServerError)
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		if err = cursor.All(context.Background(), &permissions); err != nil {
+			logger.WithError(err).Error("Failed to decode permissions")
+			handleError(w, err, "Failed to decode permissions", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Создаем новую роль
+	newRole := Role{
+		ID:          primitive.NewObjectID(),
+		Name:        roleData.Name,
+		Description: roleData.Description,
+		Permissions: permissions,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// Сохраняем роль
+	_, err = rolesCol.InsertOne(context.Background(), newRole)
+	if err != nil {
+		logger.WithError(err).Error("Failed to create role")
+		handleError(w, err, "Failed to create role", http.StatusInternalServerError)
+		return
+	}
+
+	// Логируем успешное создание роли
 	logger.WithFields(logrus.Fields{
-		"user_email": user.Email,
-		"role":       "admin",
-	}).Info("Successfully set up admin role and permissions")
+		"role_id":   newRole.ID.Hex(),
+		"role_name": newRole.Name,
+		"user_id":   userID.Hex(),
+	}).Info("Role created successfully")
+
+	// Возвращаем ответ
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Role created successfully",
+		"role":    newRole,
+	})
 }
 
-// Обновляем обработчик для удаления роли
+// Обработчик для получения информации о конкретной роли
+func getRoleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Получаем ID роли из параметров запроса
+	roleID := r.URL.Query().Get("id")
+	if roleID == "" {
+		http.Error(w, "Role ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Преобразуем строковый ID в ObjectID
+	objID, err := primitive.ObjectIDFromHex(roleID)
+	if err != nil {
+		http.Error(w, "Invalid role ID", http.StatusBadRequest)
+		return
+	}
+
+	// Получаем роль из базы данных
+	var role Role
+	err = rolesCol.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&role)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			http.Error(w, "Role not found", http.StatusNotFound)
+			return
+		}
+		handleError(w, err, "Failed to fetch role", http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем данные о роли
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(role)
+}
+
+// Обработчик для удаления роли
 func deleteRoleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1084,80 +1498,42 @@ func deleteRoleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем существование роли
-	var role Role
-	if err := db.First(&role, roleID).Error; err != nil {
-		logger.WithError(err).Error("Role not found")
-		http.Error(w, "Role not found", http.StatusNotFound)
+	objID, err := primitive.ObjectIDFromHex(roleID)
+	if err != nil {
+		http.Error(w, "Invalid role ID", http.StatusBadRequest)
 		return
 	}
 
 	// Проверяем, не пытаемся ли удалить роль admin
+	var role Role
+	err = rolesCol.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&role)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			http.Error(w, "Role not found", http.StatusNotFound)
+			return
+		}
+		handleError(w, err, "Failed to fetch role", http.StatusInternalServerError)
+		return
+	}
+
 	if role.Name == "admin" {
-		logger.Error("Attempt to delete admin role")
 		http.Error(w, "Cannot delete admin role", http.StatusForbidden)
 		return
 	}
 
-	// Начинаем транзакцию
-	tx := db.Begin()
-
-	// Удаляем связи роли с разрешениями
-	if err := tx.Model(&role).Association("Permissions").Clear(); err != nil {
-		tx.Rollback()
-		logger.WithError(err).Error("Failed to clear role permissions")
-		http.Error(w, "Failed to delete role permissions", http.StatusInternalServerError)
+	// Удаляем роль
+	result, err := rolesCol.DeleteOne(context.Background(), bson.M{"_id": objID})
+	if err != nil {
+		handleError(w, err, "Failed to delete role", http.StatusInternalServerError)
 		return
 	}
 
-	// Удаляем связи роли с пользователями
-	if err := tx.Table("user_roles").Where("role_id = ?", roleID).Delete(&struct{}{}).Error; err != nil {
-		tx.Rollback()
-		logger.WithError(err).Error("Failed to clear user roles")
-		http.Error(w, "Failed to delete user roles", http.StatusInternalServerError)
-		return
-	}
-
-	// Удаляем саму роль
-	if err := tx.Delete(&role).Error; err != nil {
-		tx.Rollback()
-		logger.WithError(err).Error("Failed to delete role")
-		http.Error(w, "Failed to delete role", http.StatusInternalServerError)
-		return
-	}
-
-	// Подтверждаем транзакцию
-	if err := tx.Commit().Error; err != nil {
-		logger.WithError(err).Error("Failed to commit transaction")
-		http.Error(w, "Failed to delete role", http.StatusInternalServerError)
-		return
-	}
-
-	logger.WithField("role_id", roleID).Info("Role deleted successfully")
-	w.WriteHeader(http.StatusOK)
-}
-
-// Обработчик для получения информации о роли
-func getRoleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	roleID := r.URL.Query().Get("id")
-	if roleID == "" {
-		http.Error(w, "Role ID is required", http.StatusBadRequest)
-		return
-	}
-
-	var role Role
-	if err := db.Preload("Permissions").First(&role, roleID).Error; err != nil {
+	if result.DeletedCount == 0 {
 		http.Error(w, "Role not found", http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(role)
+	w.WriteHeader(http.StatusOK)
 }
 
 // Обработчик для обновления роли
@@ -1168,10 +1544,10 @@ func updateRoleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var roleData struct {
-		ID          uint   `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Permissions []uint `json:"permissions"`
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Permissions []string `json:"permissions"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&roleData); err != nil {
@@ -1179,178 +1555,952 @@ func updateRoleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Проверяем ID роли
+	roleID, err := primitive.ObjectIDFromHex(roleData.ID)
+	if err != nil {
+		http.Error(w, "Invalid role ID", http.StatusBadRequest)
+		return
+	}
+
 	// Проверяем существование роли
-	var role Role
-	if err := db.First(&role, roleData.ID).Error; err != nil {
+	var existingRole Role
+	err = rolesCol.FindOne(context.Background(), bson.M{"_id": roleID}).Decode(&existingRole)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			http.Error(w, "Role not found", http.StatusNotFound)
+			return
+		}
+		handleError(w, err, "Failed to fetch role", http.StatusInternalServerError)
+		return
+	}
+
+	// Если это роль admin, проверяем, не пытаемся ли изменить её имя
+	if existingRole.Name == "admin" && roleData.Name != "admin" {
+		http.Error(w, "Cannot change admin role name", http.StatusForbidden)
+		return
+	}
+
+	// Получаем разрешения
+	var permissionIDs []primitive.ObjectID
+	for _, permID := range roleData.Permissions {
+		objID, err := primitive.ObjectIDFromHex(permID)
+		if err != nil {
+			http.Error(w, "Invalid permission ID", http.StatusBadRequest)
+			return
+		}
+		permissionIDs = append(permissionIDs, objID)
+	}
+
+	// Получаем разрешения из базы данных
+	cursor, err := database.Collection("permissions").Find(
+		context.Background(),
+		bson.M{"_id": bson.M{"$in": permissionIDs}},
+	)
+	if err != nil {
+		handleError(w, err, "Failed to fetch permissions", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var permissions []Permission
+	if err = cursor.All(context.Background(), &permissions); err != nil {
+		handleError(w, err, "Failed to decode permissions", http.StatusInternalServerError)
+		return
+	}
+
+	// Обновляем роль
+	update := bson.M{
+		"$set": bson.M{
+			"name":        roleData.Name,
+			"description": roleData.Description,
+			"permissions": permissions,
+			"updated_at":  time.Now(),
+		},
+	}
+
+	result, err := rolesCol.UpdateOne(
+		context.Background(),
+		bson.M{"_id": roleID},
+		update,
+	)
+
+	if err != nil {
+		handleError(w, err, "Failed to update role", http.StatusInternalServerError)
+		return
+	}
+
+	if result.MatchedCount == 0 {
 		http.Error(w, "Role not found", http.StatusNotFound)
 		return
 	}
 
-	// Не позволяем изменять имя роли admin
-	if role.Name == "admin" && roleData.Name != "admin" {
-		http.Error(w, "Cannot modify admin role name", http.StatusForbidden)
-		return
-	}
-
-	// Обновляем основные данные роли
-	role.Name = roleData.Name
-	role.Description = roleData.Description
-
-	// Получаем выбранные разрешения
-	var permissions []Permission
-	if err := db.Find(&permissions, roleData.Permissions).Error; err != nil {
-		http.Error(w, "Failed to fetch permissions", http.StatusInternalServerError)
-		return
-	}
-
-	// Обновляем роль и её разрешения
-	tx := db.Begin()
-	if err := tx.Save(&role).Error; err != nil {
-		tx.Rollback()
-		http.Error(w, "Failed to update role", http.StatusInternalServerError)
-		return
-	}
-
-	if err := tx.Model(&role).Association("Permissions").Replace(permissions); err != nil {
-		tx.Rollback()
-		http.Error(w, "Failed to update role permissions", http.StatusInternalServerError)
-		return
-	}
-
-	tx.Commit()
-
 	w.WriteHeader(http.StatusOK)
 }
 
-func main() {
-	// Инициализация базы данных
-	initDB()
-
-	// Создание сервера
-	srv := &http.Server{
-		Addr:    ":3000",
-		Handler: http.DefaultServeMux,
+// Функция для инициализации устройств
+func initializeDevices() {
+	devices := []Device{
+		{
+			ID:      primitive.NewObjectID(),
+			Name:    "Смартфон",
+			Price:   999.99,
+			Catalog: "Электроника",
+		},
+		// ... другие устройства ...
 	}
 
-	// Обслуживание статических файлов
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./public"))))
+	// Очищаем коллекцию перед добавлением
+	devicesCol.DeleteMany(context.Background(), bson.M{})
 
-	// Маршрут для отображения продуктов
-	http.HandleFunc("/products", rateLimitMiddleware(productsHandler))
-	http.HandleFunc("/support", supportHandler)
-	http.HandleFunc("/register", registerHandler)
-	http.HandleFunc("/verify", verifyHandler)
-	http.HandleFunc("/login", loginHandler)
-	http.HandleFunc("/otpVerify", otpVerifyHandler)
-	http.HandleFunc("/api/send-sms", handleSendSMS)
-	http.HandleFunc("/api/verify-sms", handleVerifySMS)
-	http.HandleFunc("/api/list-roles", listRolesHandler)
-	http.HandleFunc("/api/list-permissions", listPermissionsHandler)
-	http.HandleFunc("/api/add-role", addRoleHandler)
+	for _, device := range devices {
+		_, err := devicesCol.InsertOne(context.Background(), device)
+		if err != nil {
+			log.Printf("Error inserting device: %v", err)
+		}
+	}
+}
 
-	// Пример защищенного маршрута
-	http.HandleFunc("/api/protected", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Защищенные данные"))
-	}))
+// Функция для инициализации ролей и разрешений
+func initializeRolesAndPermissions() {
+	ctx := context.Background()
 
-	// Обновляем маршрут для страницы управления ролями
-	http.HandleFunc("/admin/roles", func(w http.ResponseWriter, r *http.Request) {
-		// Получаем токен из заголовка
-		authHeader := r.Header.Get("Authorization")
-		logger.WithFields(logrus.Fields{
-			"auth_header": authHeader,
-			"method":      r.Method,
-			"path":        r.URL.Path,
-		}).Info("Accessing roles page")
+	// Базовые разрешения
+	permissions := []Permission{
+		{
+			ID:          primitive.NewObjectID(),
+			Name:        "manage_roles",
+			Description: "Can manage roles and permissions",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		},
+		{
+			ID:          primitive.NewObjectID(),
+			Name:        "view_products",
+			Description: "Can view products",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		},
+		{
+			ID:          primitive.NewObjectID(),
+			Name:        "manage_products",
+			Description: "Can manage products",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		},
+		{
+			ID:          primitive.NewObjectID(),
+			Name:        "manage_users",
+			Description: "Can manage users",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		},
+	}
 
-		if authHeader == "" {
-			// Если токена нет, возможно это первоначальный запрос HTML страницы
-			if r.Header.Get("Accept") == "application/json" {
-				// Для API запросов требуем токен
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+	// Проверяем существование разрешений
+	permCount, err := database.Collection("permissions").CountDocuments(ctx, bson.M{})
+	if err != nil {
+		logger.WithError(err).Error("Failed to count permissions")
+		return
+	}
+
+	// Если разрешений нет, создаем их
+	if permCount == 0 {
+		for _, perm := range permissions {
+			_, err := database.Collection("permissions").InsertOne(ctx, perm)
+			if err != nil {
+				logger.WithError(err).Error("Failed to create permission")
 			}
-			// Для обычных запросов отдаем HTML страницу
-			http.ServeFile(w, r, "public/admin/roles.html")
+		}
+		logger.Info("Permissions initialized successfully")
+	}
+
+	// Проверяем существование роли админа
+	roleCount, err := rolesCol.CountDocuments(ctx, bson.M{"name": "admin"})
+	if err != nil {
+		logger.WithError(err).Error("Failed to count admin role")
+		return
+	}
+
+	// Если роли админа нет, создаем её
+	if roleCount == 0 {
+		adminRole := Role{
+			ID:          primitive.NewObjectID(),
+			Name:        "admin",
+			Description: "Administrator role with full access",
+			Permissions: permissions,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+
+		_, err = rolesCol.InsertOne(ctx, adminRole)
+		if err != nil {
+			logger.WithError(err).Error("Failed to create admin role")
+			return
+		}
+		logger.Info("Admin role initialized successfully")
+	}
+}
+
+// Инициализация тестового пользователя
+func initializeTestUser() {
+	ctx := context.Background()
+
+	// Проверяем существование тестового пользователя
+	var user User
+	err := usersCol.FindOne(ctx, bson.M{"email": "test@example.com"}).Decode(&user)
+	if err == mongo.ErrNoDocuments {
+		// Создаем хеш пароля
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("test123"), bcrypt.DefaultCost)
+		if err != nil {
+			logger.WithError(err).Error("Failed to hash password")
 			return
 		}
 
-		// Если есть токен, проверяем права доступа
-		tokenString := authHeader
-		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			tokenString = authHeader[7:]
+		// Создаем тестового пользователя
+		testUser := User{
+			ID:        primitive.NewObjectID(),
+			Email:     "test@example.com",
+			Password:  string(hashedPassword),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
-		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
-		})
-
-		if err != nil || !token.Valid {
-			logger.WithError(err).Error("Invalid token")
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+		_, err = usersCol.InsertOne(ctx, testUser)
+		if err != nil {
+			logger.WithError(err).Error("Failed to create test user")
 			return
 		}
 
-		email, ok := claims["email"].(string)
-		if !ok {
-			logger.Error("No email in token claims")
-			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+		logger.Info("Test user created successfully")
+	}
+}
+
+// Обработчик для получения продуктов
+func getProductsHandler(w http.ResponseWriter, r *http.Request) {
+	logger.Info("Getting products") // Добавляем логирование
+
+	// Получаем параметры фильтрации
+	catalog := r.URL.Query().Get("catalog")
+	minPriceStr := r.URL.Query().Get("minPrice")
+	maxPriceStr := r.URL.Query().Get("maxPrice")
+	sortBy := r.URL.Query().Get("sortBy")
+	sortOrder := r.URL.Query().Get("sortOrder")
+
+	// Создаем фильтр
+	filter := bson.M{}
+	if catalog != "" && catalog != "All" {
+		filter["catalog"] = catalog
+	}
+
+	// Добавляем фильтр по цене
+	if minPriceStr != "" || maxPriceStr != "" {
+		priceFilter := bson.M{}
+		if minPriceStr != "" {
+			minPrice, err := strconv.ParseFloat(minPriceStr, 64)
+			if err == nil {
+				priceFilter["$gte"] = minPrice
+			}
+		}
+		if maxPriceStr != "" {
+			maxPrice, err := strconv.ParseFloat(maxPriceStr, 64)
+			if err == nil {
+				priceFilter["$lte"] = maxPrice
+			}
+		}
+		if len(priceFilter) > 0 {
+			filter["price"] = priceFilter
+		}
+	}
+
+	// Создаем опции сортировки
+	opts := options.Find()
+	if sortBy != "" && sortBy != "none" {
+		sortDirection := 1
+		if sortOrder == "desc" {
+			sortDirection = -1
+		}
+		opts.SetSort(bson.D{{Key: sortBy, Value: sortDirection}})
+	}
+
+	logger.WithField("filter", filter).Info("Applying filter") // Логируем фильтр
+
+	// Получаем продукты из базы данных
+	cursor, err := devicesCol.Find(context.Background(), filter, opts)
+	if err != nil {
+		logger.WithError(err).Error("Failed to fetch products")
+		http.Error(w, "Failed to fetch products", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var products []Device
+	if err = cursor.All(context.Background(), &products); err != nil {
+		logger.WithError(err).Error("Failed to decode products")
+		http.Error(w, "Failed to decode products", http.StatusInternalServerError)
+		return
+	}
+
+	// Добавляем логирование для отладки
+	for _, product := range products {
+		logger.WithFields(logrus.Fields{
+			"id":   product.ID.Hex(),
+			"name": product.Name,
+		}).Info("Sending product")
+	}
+
+	// Возвращаем результат
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(products); err != nil {
+		logger.WithError(err).Error("Failed to encode response")
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+// Обработчик для страницы ролей
+func rolesPageHandler(w http.ResponseWriter, r *http.Request) {
+	// Проверяем метод
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Проверяем авторизацию
+	token := r.Header.Get("Authorization")
+	if token == "" {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Убираем префикс "Bearer "
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	// Проверяем токен
+	_, err := validateToken(token)
+	if err != nil {
+		logger.WithError(err).Error("Invalid token")
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Отдаем страницу
+	http.ServeFile(w, r, "public/admin/roles.html")
+}
+
+// Обработчик удаления пользователя
+func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
+	// Устанавливаем заголовки CORS
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Обрабатываем preflight запрос
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodDelete {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Получаем email из параметров запроса
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, `{"error": "Email is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Удаляем пользователя из базы данных
+	result, err := usersCol.DeleteOne(context.Background(), bson.M{"email": email})
+	if err != nil {
+		logger.WithError(err).Error("Failed to delete user")
+		http.Error(w, `{"error": "Failed to delete user"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if result.DeletedCount == 0 {
+		http.Error(w, `{"error": "User not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Отправляем успешный ответ
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "User successfully deleted",
+	})
+}
+
+// Обработчик выхода из системы
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Проверяем только наличие заголовка Authorization
+	if r.Header.Get("Authorization") == "" {
+		http.Error(w, `{"error": "No authorization header"}`, http.StatusUnauthorized)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Successfully logged out",
+	})
+}
+
+// Структуры данных
+type Product struct {
+	ID      primitive.ObjectID `bson:"_id" json:"_id"`
+	Name    string             `bson:"name" json:"name"`
+	Price   float64            `bson:"price" json:"price"`
+	Catalog string             `bson:"catalog" json:"catalog"`
+}
+
+// Обработчики
+func addToCartHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Получаем токен и ID пользователя
+	userID, err := getUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var item CartItem
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		http.Error(w, `{"error": "Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Находим или создаем корзину пользователя
+	var cart Cart
+	err = cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+	if err != nil {
+		cart = Cart{
+			ID:        primitive.NewObjectID(),
+			UserID:    userID,
+			Items:     []CartItem{},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+	}
+
+	// Добавляем товар в корзину
+	cart.Items = append(cart.Items, item)
+	cart.UpdatedAt = time.Now()
+	cart.Total = calculateTotal(cart.Items)
+
+	// Сохраняем корзину
+	opts := options.Update().SetUpsert(true)
+	_, err = cartsCol.UpdateOne(
+		context.Background(),
+		bson.M{"user_id": userID},
+		bson.M{"$set": cart},
+		opts,
+	)
+
+	if err != nil {
+		http.Error(w, `{"error": "Failed to update cart"}`, http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(cart)
+}
+
+func createTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	userID, err := getUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Получаем корзину пользователя
+	var cart Cart
+	err = cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+	if err != nil {
+		http.Error(w, `{"error": "Cart not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Создаем транзакцию
+	transaction := Transaction{
+		ID:        primitive.NewObjectID(),
+		UserID:    userID,
+		CartID:    cart.ID,
+		Total:     cart.Total,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	_, err = transactionsCol.InsertOne(context.Background(), transaction)
+	if err != nil {
+		http.Error(w, `{"error": "Failed to create transaction"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем запрос в микросервис
+	microserviceResp, err := sendToPaymentMicroservice(transaction)
+	if err != nil {
+		http.Error(w, `{"error": "Payment service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	json.NewEncoder(w).Encode(microserviceResp)
+}
+
+// Вспомогательные функции
+
+func sendToPaymentMicroservice(transaction Transaction) (map[string]interface{}, error) {
+	paymentData := map[string]interface{}{
+		"transaction_id": transaction.ID.Hex(),
+		"amount":         transaction.Total,
+		"user_id":        transaction.UserID.Hex(),
+	}
+
+	jsonData, err := json.Marshal(paymentData)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Post("http://payment-service:8081/process-payment",
+		"application/json",
+		bytes.NewBuffer(jsonData))
+
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// Обработчик для получения корзины
+func cartHandler(w http.ResponseWriter, r *http.Request) {
+	logger := logrus.WithFields(logrus.Fields{
+		"handler": "cartHandler",
+		"method":  r.Method,
+		"path":    r.URL.Path,
+	})
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Проверка метода запроса
+	if r.Method != "GET" && r.Method != "POST" && r.Method != "DELETE" {
+		logger.Warn("Method not allowed")
+		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Получаем ID пользователя из токена
+	userID, err := getUserIDFromToken(r)
+	if err != nil {
+		logger.WithError(err).Error("Failed to get user ID")
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == "DELETE" {
+		// Получаем ID продукта из URL
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) < 3 {
+			http.Error(w, `{"error":"Invalid product ID"}`, http.StatusBadRequest)
+			return
+		}
+		productIDStr := parts[len(parts)-1]
+
+		productID, err := primitive.ObjectIDFromHex(productIDStr)
+		if err != nil {
+			logger.WithError(err).Error("Invalid product ID format")
+			http.Error(w, `{"error":"Invalid product ID"}`, http.StatusBadRequest)
 			return
 		}
 
-		var user User
-		if err := db.Preload("Roles.Permissions").Where("email = ?", email).First(&user).Error; err != nil {
-			logger.WithError(err).Error("User not found")
-			http.Error(w, "User not found", http.StatusUnauthorized)
+		// Находим и обновляем корзину
+		update := bson.M{
+			"$pull": bson.M{
+				"items": bson.M{
+					"product_id": productID,
+				},
+			},
+		}
+
+		result, err := cartsCol.UpdateOne(
+			context.Background(),
+			bson.M{"user_id": userID},
+			update,
+		)
+
+		if err != nil {
+			logger.WithError(err).Error("Failed to remove item from cart")
+			http.Error(w, `{"error":"Failed to remove item"}`, http.StatusInternalServerError)
 			return
 		}
 
-		// Проверяем наличие разрешения manage_roles
-		hasPermission := false
-		for _, role := range user.Roles {
-			for _, perm := range role.Permissions {
-				if perm.Name == "manage_roles" {
-					hasPermission = true
-					break
+		// Если товар был удален, обновляем общую сумму
+		if result.ModifiedCount > 0 {
+			var cart Cart
+			err = cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+			if err == nil {
+				cart.Total = calculateTotal(cart.Items)
+				cart.UpdatedAt = time.Now()
+
+				_, err = cartsCol.UpdateOne(
+					context.Background(),
+					bson.M{"user_id": userID},
+					bson.M{"$set": bson.M{
+						"total":      cart.Total,
+						"updated_at": cart.UpdatedAt,
+					}},
+				)
+
+				if err != nil {
+					logger.WithError(err).Error("Failed to update cart total")
 				}
 			}
-			if hasPermission {
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Item removed from cart",
+		})
+		return
+	}
+
+	if r.Method == "GET" {
+		// Получаем корзину пользователя
+		var cart Cart
+		err := cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				// Если корзина не найдена, возвращаем пустую корзину
+				logger.Info("Cart not found, creating empty cart")
+				cart = Cart{
+					ID:        primitive.NewObjectID(),
+					UserID:    userID,
+					Items:     []CartItem{},
+					Total:     0,
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
+				}
+			} else {
+				logger.WithError(err).Error("Failed to find cart")
+				http.Error(w, `{"error":"Failed to load cart"}`, http.StatusInternalServerError)
+				return
+			}
+		}
+
+		logger.Info("Successfully retrieved cart")
+		json.NewEncoder(w).Encode(cart)
+		return
+	}
+
+	if r.Method == "POST" {
+		// Чтение тела запроса
+		var req struct {
+			ProductID string `json:"productId"`
+			Quantity  int    `json:"quantity"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			logger.WithError(err).Error("Failed to decode request")
+			http.Error(w, `{"error":"Invalid request format"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Проверка количества
+		if req.Quantity <= 0 {
+			logger.Warn("Invalid quantity")
+			http.Error(w, `{"error":"Quantity must be positive"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Получение информации о продукте
+		productID, err := primitive.ObjectIDFromHex(req.ProductID)
+		if err != nil {
+			logger.WithError(err).Error("Invalid product ID")
+			http.Error(w, `{"error":"Invalid product ID"}`, http.StatusBadRequest)
+			return
+		}
+
+		var product Device
+		err = devicesCol.FindOne(context.Background(), bson.M{"_id": productID}).Decode(&product)
+		if err != nil {
+			logger.WithError(err).Error("Failed to find product")
+			http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
+			return
+		}
+
+		// Поиск или создание корзины
+		var cart Cart
+		err = cartsCol.FindOne(context.Background(), bson.M{"user_id": userID}).Decode(&cart)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				cart = Cart{
+					ID:        primitive.NewObjectID(),
+					UserID:    userID,
+					Items:     []CartItem{},
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
+				}
+			} else {
+				logger.WithError(err).Error("Failed to find cart")
+				http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Добавление товара в корзину
+		itemFound := false
+		for i := range cart.Items {
+			if cart.Items[i].ProductID == productID {
+				cart.Items[i].Quantity += req.Quantity
+				itemFound = true
 				break
 			}
 		}
 
-		if !hasPermission {
-			logger.WithField("email", email).Error("Permission denied")
-			http.Error(w, "Forbidden", http.StatusForbidden)
+		if !itemFound {
+			cart.Items = append(cart.Items, CartItem{
+				ProductID: productID,
+				Name:      product.Name,
+				Price:     product.Price,
+				Quantity:  req.Quantity,
+			})
+		}
+
+		cart.UpdatedAt = time.Now()
+		cart.Total = calculateTotal(cart.Items)
+
+		// Сохранение корзины
+		opts := options.Update().SetUpsert(true)
+		_, err = cartsCol.UpdateOne(
+			context.Background(),
+			bson.M{"user_id": userID},
+			bson.M{"$set": cart},
+			opts,
+		)
+
+		if err != nil {
+			logger.WithError(err).Error("Failed to update cart")
+			http.Error(w, `{"error":"Failed to update cart"}`, http.StatusInternalServerError)
 			return
 		}
 
-		// Если все проверки пройдены, отдаем HTML страницу
-		http.ServeFile(w, r, "public/admin/roles.html")
+		logger.Info("Successfully updated cart")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Cart updated successfully",
+			"cart":    cart,
+		})
+		return
+	}
+}
+
+// Вспомогательная функция для подсчета общей суммы
+func calculateTotal(items []CartItem) float64 {
+	var total float64
+	for _, item := range items {
+		total += float64(item.Quantity) * item.Price
+	}
+	return total
+}
+
+// Добавляем функцию проверки подключения к MongoDB
+func checkMongoConnection() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := client.Ping(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to ping MongoDB: %v", err)
+	}
+	return nil
+}
+
+// Обработчик для получения информации о текущем пользователе
+func getCurrentUserHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Получаем токен из заголовка
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, `{"error": "No authorization header"}`, http.StatusUnauthorized)
+		return
+	}
+
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+	// Используем тот же секретный ключ, что и при создании токена
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return []byte("your-secret-key"), nil // Используйте тот же ключ, что и при создании токена
 	})
 
-	// Обновляем маршруты API для работы с ролями
-	http.HandleFunc("/admin/roles/list", permissionMiddleware("manage_roles")(listRolesHandler))
-	http.HandleFunc("/admin/permissions/list", permissionMiddleware("manage_roles")(listPermissionsHandler))
-	http.HandleFunc("/admin/roles/add", permissionMiddleware("manage_roles")(addRoleHandler))
+	if err != nil || !token.Valid {
+		http.Error(w, `{"error": "Invalid token"}`, http.StatusUnauthorized)
+		return
+	}
 
-	// Добавьте эти маршруты перед запуском сервера
-	http.HandleFunc("/admin/roles/delete", permissionMiddleware("manage_roles")(deleteRoleHandler))
-	http.HandleFunc("/admin/roles/get", permissionMiddleware("manage_roles")(getRoleHandler))
-	http.HandleFunc("/admin/roles/update", permissionMiddleware("manage_roles")(updateRoleHandler))
+	// Получаем email из claims
+	email, ok := claims["email"].(string)
+	if !ok {
+		http.Error(w, `{"error": "Invalid token claims"}`, http.StatusUnauthorized)
+		return
+	}
 
-	// Добавляем маршрут для верификации email
-	http.HandleFunc("/verify-email", verifyEmailHandler)
+	// Получаем информацию о пользователе по email
+	var user User
+	err = usersCol.FindOne(context.Background(), bson.M{"email": email}).Decode(&user)
+	if err != nil {
+		http.Error(w, `{"error": "User not found"}`, http.StatusNotFound)
+		return
+	}
 
-	// Запуск сервера в отдельной горутине
-	go func() {
-		logger.Info("Server is running on port 3000")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.WithError(err).Fatal("Failed to start server")
+	// Формируем ответ
+	response := map[string]interface{}{
+		"email": user.Email,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// Добавьте новый обработчик для проверки аутентификации
+
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
-	}()
 
-	// Обработка мягкого завершения
-	gracefulShutdown(srv)
+		next(w, r)
+	}
+}
+
+func main() {
+	log.Println("Запуск сервера...")
+
+	// Инициализация логгера
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Логгер инициализирован")
+
+	// Подключение к MongoDB
+	ctx := context.Background()
+	var err error
+
+	log.Println("Подключение к MongoDB...")
+	client, err = mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		log.Fatal("Ошибка подключения к MongoDB:", err)
+	}
+	defer client.Disconnect(ctx)
+
+	// Проверка подключения
+	log.Println("Проверка подключения к MongoDB...")
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		log.Fatal("Ошибка при проверке подключения:", err)
+	}
+	log.Println("Успешное подключение к MongoDB")
+
+	// Инициализация коллекций
+	log.Println("Инициализация коллекций...")
+	database = client.Database("ass4")
+	usersCol = database.Collection("users")
+	devicesCol = database.Collection("devices") // Добавляем инициализацию devicesCol
+	productsCol = database.Collection("devices")
+	cartsCol = database.Collection("carts")
+	transactionsCol = database.Collection("transactions")
+
+	// Создание индексов
+	log.Println("Создание индексов...")
+	_, err = usersCol.Indexes().CreateOne(
+		context.Background(),
+		mongo.IndexModel{
+			Keys:    bson.D{{Key: "email", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+	)
+	if err != nil {
+		log.Fatal("Ошибка создания индекса для email:", err)
+	}
+	log.Println("Индексы созданы успешно")
+
+	// Настройка маршрутов
+	log.Println("Настройка маршрутов...")
+	http.HandleFunc("/register", corsMiddleware(registerHandler))
+	http.HandleFunc("/login", corsMiddleware(loginHandler))
+	http.HandleFunc("/logout", corsMiddleware(logoutHandler))
+	http.HandleFunc("/cart", corsMiddleware(authMiddleware(cartHandler)))
+	http.HandleFunc("/products", corsMiddleware(productsHandler))
+	http.HandleFunc("/current-user", corsMiddleware(authMiddleware(getCurrentUserHandler)))
+	http.HandleFunc("/checkout", corsMiddleware(authMiddleware(checkoutHandler)))
+	http.Handle("/", http.FileServer(http.Dir("public")))
+	log.Println("Маршруты настроены")
+
+	// Запуск сервера
+	log.Println("Запуск HTTP сервера на порту 8080...")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatal("Ошибка запуска сервера:", err)
+	}
 }
